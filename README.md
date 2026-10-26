@@ -1,6 +1,10 @@
 [![Rust](https://img.shields.io/badge/rust-stable%202024-orange.svg)](https://www.rust-lang.org)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
+![Status: Early Development](https://img.shields.io/badge/status-pre--alpha%20%2F%20WIP-orange?style=flat-square)
+
+> ⚠️ **Note:** This repository is in the earliest stages of development and does not contain a working build yet. Stay tuned for updates!
+
 # MRVE32 (Modular RISC-V Emulator 32-bit)
 
 A modular, bare-metal RV32I emulator implemented from scratch in pure Rust (`std`-only).
