@@ -11,6 +11,8 @@ pub const MEPC: u16 = 0x341; // Machine exception program counter
 pub const MCAUSE: u16 = 0x342; // Machine trap cause
 pub const MTVAL: u16 = 0x343; // Machine bad address or instruction
 pub const MIP: u16 = 0x344; // Machine interrupt pending
+pub const MSTATUS_MIE: Reg = 1 << 3; // Machine Interrupt Enable
+pub const MSTATUS_MPIE: Reg = 1 << 7; // Machine Previous Interrupt Enable
 
 // Machine Information
 pub const MHARTID: u16 = 0xF14;

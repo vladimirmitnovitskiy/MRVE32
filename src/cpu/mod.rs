@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::bus::{BusDevice, BusError};
 use crate::cpu::coprocessor::Coprocessor;
 use crate::cpu::instructions::Instruction;
@@ -37,6 +39,24 @@ impl Cpu {
             csrs: CsrFile::new(),
             coprocessor: None,
         }
+    }
+    fn trap(&mut self, cause: Reg) -> Reg {
+        self.write_csr(csr::MEPC, self.pc);
+        self.write_csr(csr::MCAUSE, cause);
+
+        // Сохраняем MIE в MPIE и зануляем MIE
+        let mstatus = self.read_csr(csr::MSTATUS);
+        let mie = (mstatus & csr::MSTATUS_MIE) != 0;
+        let mut new_mstatus = mstatus & !csr::MSTATUS_MIE;
+        if mie {
+            new_mstatus |= csr::MSTATUS_MPIE;
+        } else {
+            new_mstatus &= !csr::MSTATUS_MPIE;
+        }
+        self.write_csr(csr::MSTATUS, new_mstatus);
+
+        let mtvec = self.read_csr(csr::MTVEC);
+        mtvec & !0b11
     }
     pub fn read_csr(&self, csr: u16) -> Reg {
         self.csrs.read(csr)
@@ -257,13 +277,27 @@ impl Cpu {
 
             // System commands
             Instruction::Ecall => {
-                self.write_csr(csr::MEPC, self.pc);
-                self.write_csr(csr::MCAUSE, 11);
-                let mtvec = self.read_csr(csr::MTVEC);
-                next_pc = mtvec & !0b11;
+                next_pc = self.trap(11); // Код 11: системный вызов
+            }
+            Instruction::Ebreak => {
+                next_pc = self.trap(3); // Код 3: точка останова (Breakpoint)
             }
             Instruction::Mret => {
                 next_pc = self.read_csr(csr::MEPC);
+
+                // Восстанавливаем MIE из MPIE и выставляем MPIE = 1
+                let mstatus = self.read_csr(csr::MSTATUS);
+                let mpie = (mstatus & csr::MSTATUS_MPIE) != 0;
+                let mut new_mstatus = mstatus | csr::MSTATUS_MPIE;
+                if mpie {
+                    new_mstatus |= csr::MSTATUS_MIE;
+                } else {
+                    new_mstatus &= !csr::MSTATUS_MIE;
+                }
+                self.write_csr(csr::MSTATUS, new_mstatus);
+            }
+            Instruction::Fence => {
+                // NOP для барьера памяти
             }
 
             // Custom
@@ -277,9 +311,6 @@ impl Cpu {
             }
 
             // Zicsr
-            Instruction::Fence | Instruction::Ebreak => {
-                //NOP
-            }
             Instruction::Csrrw { rd, rs1, csr } => {
                 let old = self.read_csr(csr);
                 self.write_csr(csr, self.read_reg(rs1));
@@ -322,6 +353,26 @@ impl Cpu {
 
         self.pc = next_pc;
         Ok(())
+    }
+}
+
+impl fmt::Display for CpuError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CpuError::IllegalInstruction(raw) => {
+                write!(f, "Illegal instruction: 0x{:08X}", raw)
+            }
+            CpuError::Bus(err) => write!(f, "CPU bus fault: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for CpuError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CpuError::Bus(err) => Some(err),
+            _ => None,
+        }
     }
 }
 
@@ -459,7 +510,7 @@ mod tests {
         ram.write_u32(4, 0x0010_8133).unwrap();
 
         // Подключаем RAM по адресу 0x1000
-        bus.map_device(0x1000, 1024, Box::new(ram));
+        bus.map_device(0x1000, 1024, Box::new(ram)).unwrap();
 
         // Стартуем процессор с адреса 0x1000
         let mut cpu = Cpu::new(0x1000);
@@ -487,7 +538,7 @@ mod tests {
             ram.write_u32((i * 4) as u32, inst).unwrap();
         }
 
-        bus.map_device(0x1000, 4096, Box::new(ram));
+        bus.map_device(0x1000, 4096, Box::new(ram)).unwrap();
         let cpu = Cpu::new(0x1000);
         (cpu, bus)
     }
@@ -914,10 +965,9 @@ mod tests {
     }
 
     #[test]
-    fn test_fence_and_ebreak_act_as_nop() {
+    fn test_fence_acts_as_nop() {
         let (mut cpu, mut bus) = setup_env(&[
             0x0000_000F, // fence
-            0x0010_0073, // ebreak
             0x02A0_0093, // addi x1, x0, 42
         ]);
 
@@ -925,13 +975,32 @@ mod tests {
         cpu.step(&mut bus).unwrap();
         assert_eq!(cpu.pc, 0x1004);
 
-        // EBREAK просто сдвигает PC на 4
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.pc, 0x1008);
-
         // addi
         cpu.step(&mut bus).unwrap();
         assert_eq!(cpu.read_reg(1), 42);
+    }
+
+    #[test]
+    fn test_ebreak_traps_to_mtvec() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0x0010_0073, // ebreak
+        ]);
+
+        // Настраиваем вектор прерываний и включаем прерывания (MIE = 1)
+        cpu.write_csr(csr::MTVEC, 0x8000_0000);
+        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MIE);
+
+        cpu.step(&mut bus).unwrap();
+
+        // Проверяем аппаратный переход и сохранение контекста
+        assert_eq!(cpu.pc, 0x8000_0000);
+        assert_eq!(cpu.read_csr(csr::MEPC), 0x1000);
+        assert_eq!(cpu.read_csr(csr::MCAUSE), 3); // mcause = 3 (Breakpoint)
+
+        // Проверяем аппаратный стек: MIE отключился, а MPIE стал 1
+        let mstatus = cpu.read_csr(csr::MSTATUS);
+        assert_eq!(mstatus & csr::MSTATUS_MIE, 0);
+        assert_ne!(mstatus & csr::MSTATUS_MPIE, 0);
     }
 
     #[test]

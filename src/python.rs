@@ -15,7 +15,8 @@ impl Emulator {
     #[pyo3(signature = (pc=0x1000, ram_size=4096))]
     pub fn new(pc: Reg, ram_size: usize) -> Self {
         let mut bus = Bus::new();
-        bus.map_device(pc, ram_size as Reg, Box::new(Ram::new(ram_size)));
+        bus.map_device(pc, ram_size as Reg, Box::new(Ram::new(ram_size)))
+            .expect("Failed  to map RAM");
         let cpu = Cpu::new(pc);
         Self { cpu, bus }
     }
@@ -58,6 +59,40 @@ impl Emulator {
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))?;
         }
         Ok(())
+    }
+
+    // CSR
+    pub fn read_csr(&self, csr: u16) -> Reg {
+        self.cpu.read_csr(csr)
+    }
+
+    pub fn write_csr(&mut self, csr: u16, val: Reg) {
+        self.cpu.write_csr(csr, val);
+    }
+
+    // Чтение и запись памяти напрямую через шину
+    pub fn read_u8(&mut self, addr: Reg) -> PyResult<u8> {
+        self.bus
+            .read_u8(addr)
+            .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
+    }
+
+    pub fn read_u32(&mut self, addr: Reg) -> PyResult<u32> {
+        self.bus
+            .read_u32(addr)
+            .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
+    }
+
+    pub fn write_u8(&mut self, addr: Reg, val: u8) -> PyResult<()> {
+        self.bus
+            .write_u8(addr, val)
+            .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
+    }
+
+    pub fn write_u32(&mut self, addr: Reg, val: u32) -> PyResult<()> {
+        self.bus
+            .write_u32(addr, val)
+            .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
     }
 }
 

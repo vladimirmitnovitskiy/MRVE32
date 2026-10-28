@@ -1,4 +1,5 @@
 use crate::types::Reg;
+use std::fmt;
 
 struct DeviceEntry {
     start: Reg,
@@ -13,6 +14,7 @@ pub struct Bus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {
     AddressNotFound(Reg),
+    Overlap { start: Reg, length: Reg },
 }
 
 impl Default for Bus {
@@ -36,12 +38,30 @@ impl Bus {
             devices: Vec::new(),
         }
     }
-    pub fn map_device(&mut self, start: Reg, length: Reg, device: Box<dyn BusDevice>) {
+    pub fn map_device(
+        &mut self,
+        start: Reg,
+        length: Reg,
+        device: Box<dyn BusDevice>,
+    ) -> Result<(), BusError> {
+        let new_start = start as u64;
+        let new_end = new_start + length as u64;
+
+        for entry in &self.devices {
+            let entry_start = entry.start as u64;
+            let entry_end = entry_start + entry.length as u64;
+
+            if new_start < entry_end && entry_start < new_end {
+                return Err(BusError::Overlap { start, length });
+            }
+        }
+
         self.devices.push(DeviceEntry {
             start,
             length,
             device,
         });
+        Ok(())
     }
 
     fn find_device(&mut self, addr: Reg) -> Result<(&mut Box<dyn BusDevice>, Reg), BusError> {
@@ -83,6 +103,26 @@ impl BusDevice for Bus {
         device.write_u32(offset, val)
     }
 }
+
+impl fmt::Display for BusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BusError::AddressNotFound(addr) => {
+                write!(f, "Bus error: address 0x{:08X} not mapped", addr)
+            }
+            BusError::Overlap { start, length } => {
+                write!(
+                    f,
+                    "Bus error: device at 0x{:08X}..0x{:08X} overlaps with existing device",
+                    start,
+                    start.wrapping_add(*length)
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BusError {}
 
 #[cfg(test)]
 mod tests {
@@ -173,7 +213,8 @@ mod tests {
     fn test_read_write_with_offset() {
         let mut bus = Bus::new();
         // Мапим 256 байт памяти по адресу 0x1000
-        bus.map_device(0x1000, 0x100, Box::new(MockMemory::new(0x100)));
+        bus.map_device(0x1000, 0x100, Box::new(MockMemory::new(0x100)))
+            .unwrap();
 
         // Запись u8, u16, u32
         bus.write_u8(0x1000, 0xAA).unwrap();
@@ -192,8 +233,8 @@ mod tests {
         let dev1 = Box::new(MockMemory::new(0x10));
         let dev2 = Box::new(MockMemory::new(0x10));
 
-        bus.map_device(0x0000, 0x10, dev1);
-        bus.map_device(0x0100, 0x10, dev2);
+        bus.map_device(0x0000, 0x10, dev1).unwrap();
+        bus.map_device(0x0100, 0x10, dev2).unwrap();
 
         bus.write_u8(0x0002, 0x11).unwrap();
         bus.write_u8(0x0102, 0x22).unwrap();
@@ -206,7 +247,8 @@ mod tests {
     #[test]
     fn test_address_not_found() {
         let mut bus = Bus::new();
-        bus.map_device(0x2000, 0x100, Box::new(MockMemory::new(0x100)));
+        bus.map_device(0x2000, 0x100, Box::new(MockMemory::new(0x100)))
+            .unwrap();
 
         // Адрес до диапазона
         assert_eq!(bus.read_u8(0x1FFF), Err(BusError::AddressNotFound(0x1FFF)));
@@ -223,7 +265,8 @@ mod tests {
     fn test_boundary_conditions() {
         let mut bus = Bus::new();
         // Диапазон [0x100, 0x104) -> длина 4 байта
-        bus.map_device(0x100, 4, Box::new(MockMemory::new(4)));
+        bus.map_device(0x100, 4, Box::new(MockMemory::new(4)))
+            .unwrap();
 
         // Самый первый байт
         assert!(bus.write_u8(0x100, 0x01).is_ok());
@@ -241,11 +284,26 @@ mod tests {
         let mut root_bus = Bus::new();
         let mut sub_bus = Bus::new();
 
-        sub_bus.map_device(0x00, 0x20, Box::new(MockMemory::new(0x20)));
-        root_bus.map_device(0x1000, 0x100, Box::new(sub_bus));
+        sub_bus
+            .map_device(0x00, 0x20, Box::new(MockMemory::new(0x20)))
+            .unwrap();
+        root_bus
+            .map_device(0x1000, 0x100, Box::new(sub_bus))
+            .unwrap();
 
         // Доступ через корневую шину ко вложенной
         root_bus.write_u16(0x1008, 0xCAFE).unwrap();
         assert_eq!(root_bus.read_u16(0x1008), Ok(0xCAFE));
+    }
+
+    #[test]
+    fn test_overlapping_device_mapping() {
+        let mut bus = Bus::new();
+        bus.map_device(0x1000, 0x100, Box::new(MockMemory::new(0x100)))
+            .unwrap();
+
+        // Попытка посадить устройство на пересекающийся диапазон
+        let res = bus.map_device(0x1050, 0x100, Box::new(MockMemory::new(0x100)));
+        assert!(matches!(res, Err(BusError::Overlap { .. })));
     }
 }

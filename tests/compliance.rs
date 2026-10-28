@@ -32,7 +32,8 @@ fn test_official_rv32ui_suite() {
         }
 
         let mut bus = Bus::new();
-        bus.map_device(0x8000_0000, 1024 * 1024, Box::new(ram));
+        bus.map_device(0x8000_0000, 1024 * 1024, Box::new(ram))
+            .unwrap();
 
         let mut cpu = Cpu::new(0x8000_0000);
         let mut test_passed = false;
