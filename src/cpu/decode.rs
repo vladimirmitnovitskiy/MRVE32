@@ -126,11 +126,27 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
         0x6F => Ok(Instruction::Jal { rd, imm: imm_j }),
         0x37 => Ok(Instruction::Lui { rd, imm: imm_u }),
         0x17 => Ok(Instruction::Auipc { rd, imm: imm_u }),
-        0x73 => match raw {
-            0x0000_0073 => Ok(Instruction::Ecall),
-            0x0010_0073 => Ok(Instruction::Ebreak),
-            _ => Err(CpuError::IllegalInstruction(raw)),
+        0x73 =>  {
+            let csr = ((raw >> 20) & 0xFFF) as u16;
+            let uimm = (raw >> 15) & 0x1F;
+
+            match funct3 {
+                0x0 => match raw {
+                    0x0000_0073 => Ok(Instruction::Ecall),
+                    0x0010_0073 => Ok(Instruction::Ebreak),
+                    0x3020_0073 => Ok(Instruction::Mret),
+                    _ => Err(CpuError::IllegalInstruction(raw)),
+                },
+                0x1 => Ok(Instruction::Csrrw { rd, rs1, csr }),
+                0x2 => Ok(Instruction::Csrrs { rd, rs1, csr }),
+                0x3 => Ok(Instruction::Csrrc { rd, rs1, csr }),
+                0x5 => Ok(Instruction::Csrrwi { rd, uimm, csr }),
+                0x6 => Ok(Instruction::Csrrsi { rd, uimm, csr }),
+                0x7 => Ok(Instruction::Csrrci { rd, uimm, csr }),
+                _ => Err(CpuError::IllegalInstruction(raw)),
+            }
         },
+        0x0F => Ok(Instruction::Fence),
         _ => Err(CpuError::IllegalInstruction(raw)),
     }
 }

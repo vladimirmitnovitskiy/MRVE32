@@ -5,7 +5,10 @@ use crate::types::Reg;
 
 pub mod coprocessor;
 pub mod decode;
+pub mod csr;
 pub mod instructions;
+
+use csr::CsrFile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuError {
@@ -16,6 +19,7 @@ pub enum CpuError {
 pub struct Cpu {
     regs: [Reg; 32],
     pub pc: Reg,
+    pub csrs: CsrFile,
     coprocessor: Option<Box<dyn Coprocessor>>,
 }
 
@@ -30,8 +34,15 @@ impl Cpu {
         Self {
             regs: [0; 32],
             pc,
+            csrs: CsrFile::new(),
             coprocessor: None,
         }
+    }
+    pub fn read_csr(&self, csr: u16) -> Reg {
+        self.csrs.read(csr)
+    }
+    pub fn write_csr(&mut self, csr: u16, val: Reg) {
+        self.csrs.write(csr, val);
     }
     pub fn read_reg(&self, reg: usize) -> Reg {
         if reg == 0 { 0 } else { self.regs[reg] }
@@ -245,9 +256,16 @@ impl Cpu {
             }
 
             // System commands
-            Instruction::Ecall | Instruction::Ebreak => {
-                // with bare-metal mode without OS works like NOP
-            }
+            Instruction::Ecall => {
+                self.write_csr(csr::MEPC, self.pc);
+                self.write_csr(csr::MCAUSE, 11);
+                let mtvec = self.read_csr(csr::MTVEC);
+                next_pc = mtvec & !0b11;
+            },
+            Instruction::Mret => {
+                next_pc = self.read_csr(csr::MEPC);
+            },
+
 
             // Custom
             Instruction::Custom { opcode, raw } => {
@@ -257,7 +275,51 @@ impl Cpu {
                 } else {
                     return Err(CpuError::IllegalInstruction(raw));
                 }
-            }
+            },
+
+            // Zicsr
+            Instruction::Fence | Instruction::Ebreak => {
+                //NOP
+            },
+            Instruction::Csrrw { rd, rs1, csr } => {
+                let old = self.read_csr(csr);
+                self.write_csr(csr, self.read_reg(rs1));
+                self.write_reg(rd, old);
+            },
+            Instruction::Csrrs { rd, rs1, csr } => {
+                let old = self.read_csr(csr);
+                if rs1 != 0 {
+                    self.write_csr(csr, old | self.read_reg(rs1));
+                }
+                self.write_reg(rd, old);
+            },
+            Instruction::Csrrc { rd, rs1, csr } => {
+                let old = self.read_csr(csr);
+                if rs1 != 0 {
+                    self.write_csr(csr, old & !self.read_reg(rs1));
+                }
+                self.write_reg(rd, old);
+            },
+            Instruction::Csrrwi { rd, uimm, csr } => {
+                let old = self.read_csr(csr);
+                self.write_csr(csr, uimm);
+                self.write_reg(rd, old);
+            },
+            Instruction::Csrrsi { rd, uimm, csr } => {
+                let old = self.read_csr(csr);
+                if uimm != 0 {
+                    self.write_csr(csr, old | uimm);
+                }
+                self.write_reg(rd, old);
+            },
+            Instruction::Csrrci { rd, uimm, csr } => {
+                let old = self.read_csr(csr);
+                if uimm != 0 {
+                    self.write_csr(csr, old & !uimm);
+                }
+                self.write_reg(rd, old);
+            },
+
         }
 
         self.pc = next_pc;
@@ -655,27 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ecall_and_ebreak_act_as_nop() {
-        let (mut cpu, mut bus) = setup_env(&[
-            0x0000_0073, // ecall
-            0x0010_0073, // ebreak
-            0x02A0_0093, // addi x1, x0, 42
-        ]);
-
-        // ECALL просто сдвигает PC на 4
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.pc, 0x1004);
-
-        // EBREAK просто сдвигает PC на 4
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.pc, 0x1008);
-
-        // Следующая инструкция штатно выполняется
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.read_reg(1), 42);
-    }
-
-    #[test]
     fn test_custom_instruction_without_coprocessor_fails() {
         // Opcode 0x0B (0001011) — стандартный слот custom-0 в RISC-V
         let raw_custom = 0x0000_000B;
@@ -873,4 +914,43 @@ mod tests {
         assert_eq!(cpu.read_reg(3), 0);
         assert_eq!(cpu.read_reg(4), u32::MAX);
     }
+
+    #[test]
+    fn test_fence_and_ebreak_act_as_nop() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0x0000_000F, // fence
+            0x0010_0073, // ebreak
+            0x02A0_0093, // addi x1, x0, 42
+        ]);
+
+        // FENCE просто сдвигает PC на 4
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.pc, 0x1004);
+
+        // EBREAK просто сдвигает PC на 4
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.pc, 0x1008);
+
+        // addi
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.read_reg(1), 42);
+    }
+
+    #[test]
+    fn test_ecall_traps_to_mtvec() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0x0000_0073, // ecall
+        ]);
+
+        // Настраиваем адрес вектора прерываний
+        cpu.write_csr(csr::MTVEC, 0x8000_0000);
+
+        cpu.step(&mut bus).unwrap();
+
+        // Проверяем аппаратный переход и сохранение контекста
+        assert_eq!(cpu.pc, 0x8000_0000);
+        assert_eq!(cpu.read_csr(csr::MEPC), 0x1000);
+        assert_eq!(cpu.read_csr(csr::MCAUSE), 11); // Environment call from M-mode
+    }
+
 }

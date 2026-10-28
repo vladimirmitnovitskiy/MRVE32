@@ -14,14 +14,14 @@ memory-mapped I/O (MMIO) bus and an extension slot for domain-specific instructi
 
 ## Key Architecture & Features
 
-- **Strict RV32I Integer Base ISA**: Fully verified implementations of R, I, S, B, U, and J instruction formats.
+- **Strict RV32I Integer Base ISA & Zicsr**: Fully verified implementations of R, I, S, B, U, J, and Zicsr (CSR read/write/set/clear) instruction formats, with machine-mode trap handling (`ecall`, `mret`).
+- **100% Official RISC-V Compliance**: Passes all 42 official architectural tests from the `riscv-tests` suite (`rv32ui-p-*`).
 - **Bare-Metal & Deterministic**: Runs in Machine-level bare-metal mode with no MMU, virtual memory, or OS overhead.
 - **Modular Bus Architecture**: Devices, RAM, and memory-mapped peripherals implement the `BusDevice` trait. The bus performs transparent offset translation and address routing.
 - **Hardware Coprocessor Slot**: Dedicated extension point via `trait Coprocessor` for custom instructions (reserved opcodes `0x0B` and `0x2B`), with automatic hardware `x0` invariant enforcement.
 - **Unidirectional Ownership**: Clean Rust ownership model (`cpu.step(&mut bus)`). The CPU core maintains zero references to the system bus.
 - **Zero Core Dependencies**: Core library depends only on Rust `std` (ready for embedded environments).
 - **Python Verification Testbenches (PyO3)**: Optional `python` feature providing an `Emulator` class for automated stimulus generation and register-level verification.
-- **Rigorous Verification**: 54 comprehensive unit and integration tests covering sign extensions, arithmetic wrapping, memory boundaries, and control flow edge cases.
 
 ---
 
@@ -105,10 +105,16 @@ assert emu.pc == 0x100C
 ---
 ## Verification & Quality Assurance
 
-Run the test suite:
+Run the full test suite (including all 42 official RISC-V compliance tests):
 
 ```bash
 cargo test
+```
+
+Run only the official RISC-V architectural compliance suite:
+
+```bash
+cargo test --test compliance -- --nocapture
 ```
 
 Run static analysis and linter checks:
