@@ -13,11 +13,9 @@ pub struct Bus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {
     AddressNotFound(Reg),
-
 }
 
-
-pub trait BusDevice{
+pub trait BusDevice {
     fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError>;
     fn read_u16(&mut self, addr: Reg) -> Result<u16, BusError>;
     fn read_u32(&mut self, addr: Reg) -> Result<u32, BusError>;
@@ -28,19 +26,19 @@ pub trait BusDevice{
 
 impl Bus {
     pub fn new() -> Self {
-        Self { 
-            devices: Vec::new()
+        Self {
+            devices: Vec::new(),
         }
     }
-    pub fn map_device(&mut self, start: Reg, length: Reg, device: Box<dyn BusDevice>){
+    pub fn map_device(&mut self, start: Reg, length: Reg, device: Box<dyn BusDevice>) {
         self.devices.push(DeviceEntry {
-                start,
-                length,
-                device,
-            });
+            start,
+            length,
+            device,
+        });
     }
 
-    fn find_device(&mut self, addr: Reg) -> Result<(&mut Box<dyn BusDevice>, Reg), BusError>{
+    fn find_device(&mut self, addr: Reg) -> Result<(&mut Box<dyn BusDevice>, Reg), BusError> {
         for entry in &mut self.devices {
             if addr >= entry.start {
                 let offset = addr - entry.start;
@@ -48,9 +46,8 @@ impl Bus {
                     return Ok((&mut entry.device, offset));
                 }
             }
-        }   
+        }
         Err(BusError::AddressNotFound(addr))
-            
     }
 }
 
@@ -80,7 +77,6 @@ impl BusDevice for Bus {
         device.write_u32(offset, val)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

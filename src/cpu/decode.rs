@@ -1,6 +1,6 @@
 use crate::cpu::{CpuError, instructions::Instruction};
 
-pub fn decode(raw: u32) -> Result<Instruction, CpuError>{
+pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
     let opcode = (raw & 0x7F) as u8;
     let rd = ((raw >> 7) & 0x1F) as usize;
     let funct3 = ((raw >> 12) & 0x07) as u8;
@@ -9,19 +9,17 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError>{
     let funct7 = ((raw >> 25) & 0x7F) as u8;
     let imm = (raw as i32) >> 20;
     let imm_s = ((raw as i32) >> 25 << 5) | (((raw >> 7) & 0x1F) as i32);
-    let bit12    = (raw as i32) >> 31 << 12;
-    let bit11    = (((raw >> 7) & 0x01) as i32) << 11;
+    let bit12 = (raw as i32) >> 31 << 12;
+    let bit11 = (((raw >> 7) & 0x01) as i32) << 11;
     let bits10_5 = (((raw >> 25) & 0x3F) as i32) << 5;
-    let bits4_1  = (((raw >> 8) & 0x0F) as i32) << 1;
-    let imm_b    = bit12 | bit11 | bits10_5 | bits4_1;
-    let bit20     = (raw as i32) >> 31 << 20;
+    let bits4_1 = (((raw >> 8) & 0x0F) as i32) << 1;
+    let imm_b = bit12 | bit11 | bits10_5 | bits4_1;
+    let bit20 = (raw as i32) >> 31 << 20;
     let bits19_12 = (((raw >> 12) & 0xFF) as i32) << 12;
-    let bit11     = (((raw >> 20) & 0x01) as i32) << 11;
-    let bits10_1  = (((raw >> 21) & 0x3FF) as i32) << 1;
-    let imm_j     = bit20 | bits19_12 | bit11 | bits10_1;
+    let bit11 = (((raw >> 20) & 0x01) as i32) << 11;
+    let bits10_1 = (((raw >> 21) & 0x3FF) as i32) << 1;
+    let imm_j = bit20 | bits19_12 | bit11 | bits10_1;
     let imm_u = (raw & 0xFFFF_F000) as i32;
-
-
 
     match opcode {
         0x33 => match (funct3, funct7) {
@@ -35,7 +33,7 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError>{
             (0x5, 0x20) => Ok(Instruction::Sra { rd, rs1, rs2 }),
             (0x6, 0x00) => Ok(Instruction::Or { rd, rs1, rs2 }),
             (0x7, 0x00) => Ok(Instruction::And { rd, rs1, rs2 }),
-            _ => Err(CpuError::IllegalInstruction(raw))
+            _ => Err(CpuError::IllegalInstruction(raw)),
         },
         0x13 => match funct3 {
             0x0 => Ok(Instruction::Addi { rd, rs1, imm }),
@@ -51,14 +49,14 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError>{
                 } else {
                     Err(CpuError::IllegalInstruction(raw))
                 }
-            },
+            }
 
             0x5 => match funct7 {
                 0x00 => Ok(Instruction::Srli { rd, rs1, imm }),
                 0x20 => Ok(Instruction::Srai { rd, rs1, imm }),
-                _ => Err(CpuError::IllegalInstruction(raw))
+                _ => Err(CpuError::IllegalInstruction(raw)),
             },
-            
+
             _ => Err(CpuError::IllegalInstruction(raw)),
         },
         0x03 => match funct3 {
@@ -75,18 +73,54 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError>{
         },
         0x0B | 0x2B => Ok(Instruction::Custom { opcode, raw }),
         0x23 => match funct3 {
-            0x0 => Ok(Instruction::Sb { rs1, rs2, imm: imm_s }),
-            0x1 => Ok(Instruction::Sh { rs1, rs2, imm: imm_s }),
-            0x2 => Ok(Instruction::Sw { rs1, rs2, imm: imm_s }),
-            _ => Err(CpuError::IllegalInstruction(raw)),     
+            0x0 => Ok(Instruction::Sb {
+                rs1,
+                rs2,
+                imm: imm_s,
+            }),
+            0x1 => Ok(Instruction::Sh {
+                rs1,
+                rs2,
+                imm: imm_s,
+            }),
+            0x2 => Ok(Instruction::Sw {
+                rs1,
+                rs2,
+                imm: imm_s,
+            }),
+            _ => Err(CpuError::IllegalInstruction(raw)),
         },
         0x63 => match funct3 {
-            0x0 => Ok(Instruction::Beq { rs1, rs2, imm: imm_b }),
-            0x1 => Ok(Instruction::Bne { rs1, rs2, imm: imm_b }),
-            0x4 => Ok(Instruction::Blt { rs1, rs2, imm: imm_b }),
-            0x5 => Ok(Instruction::Bge { rs1, rs2, imm: imm_b }),
-            0x6 => Ok(Instruction::Bltu { rs1, rs2, imm: imm_b }),
-            0x7 => Ok(Instruction::Bgeu { rs1, rs2, imm: imm_b }),
+            0x0 => Ok(Instruction::Beq {
+                rs1,
+                rs2,
+                imm: imm_b,
+            }),
+            0x1 => Ok(Instruction::Bne {
+                rs1,
+                rs2,
+                imm: imm_b,
+            }),
+            0x4 => Ok(Instruction::Blt {
+                rs1,
+                rs2,
+                imm: imm_b,
+            }),
+            0x5 => Ok(Instruction::Bge {
+                rs1,
+                rs2,
+                imm: imm_b,
+            }),
+            0x6 => Ok(Instruction::Bltu {
+                rs1,
+                rs2,
+                imm: imm_b,
+            }),
+            0x7 => Ok(Instruction::Bgeu {
+                rs1,
+                rs2,
+                imm: imm_b,
+            }),
             _ => Err(CpuError::IllegalInstruction(raw)),
         },
         0x6F => Ok(Instruction::Jal { rd, imm: imm_j }),
@@ -96,10 +130,10 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError>{
             0x0000_0073 => Ok(Instruction::Ecall),
             0x0010_0073 => Ok(Instruction::Ebreak),
             _ => Err(CpuError::IllegalInstruction(raw)),
-        }
-        _ => Err(CpuError::IllegalInstruction(raw))
+        },
+        _ => Err(CpuError::IllegalInstruction(raw)),
     }
-} 
+}
 
 #[cfg(test)]
 mod tests {
@@ -154,9 +188,7 @@ mod tests {
     }
 
     fn encode_u_type(opcode: u8, rd: usize, imm: i32) -> u32 {
-        ((imm as u32) & 0xFFFF_F000)
-            | ((rd as u32 & 0x1F) << 7)
-            | (opcode as u32 & 0x7F)
+        ((imm as u32) & 0xFFFF_F000) | ((rd as u32 & 0x1F) << 7) | (opcode as u32 & 0x7F)
     }
 
     fn encode_j_type(opcode: u8, rd: usize, imm: i32) -> u32 {
@@ -189,16 +221,96 @@ mod tests {
     #[test]
     fn test_decode_all_valid_r_type_instructions() {
         let cases = [
-            (0x0, 0x00, Instruction::Add { rd: 1, rs1: 2, rs2: 3 }),
-            (0x0, 0x20, Instruction::Sub { rd: 1, rs1: 2, rs2: 3 }),
-            (0x1, 0x00, Instruction::Sll { rd: 1, rs1: 2, rs2: 3 }),
-            (0x2, 0x00, Instruction::Slt { rd: 1, rs1: 2, rs2: 3 }),
-            (0x3, 0x00, Instruction::Sltu { rd: 1, rs1: 2, rs2: 3 }),
-            (0x4, 0x00, Instruction::Xor { rd: 1, rs1: 2, rs2: 3 }),
-            (0x5, 0x00, Instruction::Srl { rd: 1, rs1: 2, rs2: 3 }),
-            (0x5, 0x20, Instruction::Sra { rd: 1, rs1: 2, rs2: 3 }),
-            (0x6, 0x00, Instruction::Or { rd: 1, rs1: 2, rs2: 3 }),
-            (0x7, 0x00, Instruction::And { rd: 1, rs1: 2, rs2: 3 }),
+            (
+                0x0,
+                0x00,
+                Instruction::Add {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x0,
+                0x20,
+                Instruction::Sub {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x1,
+                0x00,
+                Instruction::Sll {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x2,
+                0x00,
+                Instruction::Slt {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x3,
+                0x00,
+                Instruction::Sltu {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x4,
+                0x00,
+                Instruction::Xor {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x5,
+                0x00,
+                Instruction::Srl {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x5,
+                0x20,
+                Instruction::Sra {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x6,
+                0x00,
+                Instruction::Or {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
+            (
+                0x7,
+                0x00,
+                Instruction::And {
+                    rd: 1,
+                    rs1: 2,
+                    rs2: 3,
+                },
+            ),
         ];
 
         for (funct3, funct7, expected) in cases {
@@ -246,10 +358,16 @@ mod tests {
     #[test]
     fn test_illegal_opcode() {
         let raw_invalid = 0x0000_007F;
-        assert_eq!(decode(raw_invalid), Err(CpuError::IllegalInstruction(raw_invalid)));
+        assert_eq!(
+            decode(raw_invalid),
+            Err(CpuError::IllegalInstruction(raw_invalid))
+        );
 
         let raw_zero = 0x0000_0000;
-        assert_eq!(decode(raw_zero), Err(CpuError::IllegalInstruction(raw_zero)));
+        assert_eq!(
+            decode(raw_zero),
+            Err(CpuError::IllegalInstruction(raw_zero))
+        );
     }
 
     #[test]
@@ -272,12 +390,54 @@ mod tests {
     #[test]
     fn test_decode_i_type_alu() {
         let cases = [
-            (0x0, Instruction::Addi { rd: 5, rs1: 6, imm: 42 }),
-            (0x2, Instruction::Slti { rd: 5, rs1: 6, imm: 42 }),
-            (0x3, Instruction::Sltiu { rd: 5, rs1: 6, imm: 42 }),
-            (0x4, Instruction::Xori { rd: 5, rs1: 6, imm: 42 }),
-            (0x6, Instruction::Ori { rd: 5, rs1: 6, imm: 42 }),
-            (0x7, Instruction::Andi { rd: 5, rs1: 6, imm: 42 }),
+            (
+                0x0,
+                Instruction::Addi {
+                    rd: 5,
+                    rs1: 6,
+                    imm: 42,
+                },
+            ),
+            (
+                0x2,
+                Instruction::Slti {
+                    rd: 5,
+                    rs1: 6,
+                    imm: 42,
+                },
+            ),
+            (
+                0x3,
+                Instruction::Sltiu {
+                    rd: 5,
+                    rs1: 6,
+                    imm: 42,
+                },
+            ),
+            (
+                0x4,
+                Instruction::Xori {
+                    rd: 5,
+                    rs1: 6,
+                    imm: 42,
+                },
+            ),
+            (
+                0x6,
+                Instruction::Ori {
+                    rd: 5,
+                    rs1: 6,
+                    imm: 42,
+                },
+            ),
+            (
+                0x7,
+                Instruction::Andi {
+                    rd: 5,
+                    rs1: 6,
+                    imm: 42,
+                },
+            ),
         ];
 
         for (funct3, expected) in cases {
@@ -289,7 +449,11 @@ mod tests {
         let raw_neg = encode_i_type(OPCODE_I_ALU, 1, 0x0, 2, -1);
         assert_eq!(
             decode(raw_neg),
-            Ok(Instruction::Addi { rd: 1, rs1: 2, imm: -1 })
+            Ok(Instruction::Addi {
+                rd: 1,
+                rs1: 2,
+                imm: -1
+            })
         );
     }
 
@@ -297,26 +461,50 @@ mod tests {
     fn test_decode_i_type_shifts() {
         // slli: funct7 = 0x00, shamt = 4
         let raw_slli = encode_r_type(OPCODE_I_ALU, 2, 0x1, 3, 4, 0x00);
-        assert_eq!(decode(raw_slli), Ok(Instruction::Slli { rd: 2, rs1: 3, imm: 4 }));
+        assert_eq!(
+            decode(raw_slli),
+            Ok(Instruction::Slli {
+                rd: 2,
+                rs1: 3,
+                imm: 4
+            })
+        );
 
         // srli: funct7 = 0x00, shamt = 5
         let raw_srli = encode_r_type(OPCODE_I_ALU, 2, 0x5, 3, 5, 0x00);
-        assert_eq!(decode(raw_srli), Ok(Instruction::Srli { rd: 2, rs1: 3, imm: 5 }));
+        assert_eq!(
+            decode(raw_srli),
+            Ok(Instruction::Srli {
+                rd: 2,
+                rs1: 3,
+                imm: 5
+            })
+        );
 
         // srai: funct7 = 0x20, shamt = 6
         let raw_srai = encode_r_type(OPCODE_I_ALU, 2, 0x5, 3, 6, 0x20);
         assert_eq!(
             decode(raw_srai),
-            Ok(Instruction::Srai { rd: 2, rs1: 3, imm: 0x406 })
+            Ok(Instruction::Srai {
+                rd: 2,
+                rs1: 3,
+                imm: 0x406
+            })
         );
 
         // Невалидный funct7 для slli
         let invalid_slli = encode_r_type(OPCODE_I_ALU, 2, 0x1, 3, 4, 0x20);
-        assert_eq!(decode(invalid_slli), Err(CpuError::IllegalInstruction(invalid_slli)));
+        assert_eq!(
+            decode(invalid_slli),
+            Err(CpuError::IllegalInstruction(invalid_slli))
+        );
 
         // Невалидный funct7 для srli/srai
         let invalid_shift = encode_r_type(OPCODE_I_ALU, 2, 0x5, 3, 4, 0x01);
-        assert_eq!(decode(invalid_shift), Err(CpuError::IllegalInstruction(invalid_shift)));
+        assert_eq!(
+            decode(invalid_shift),
+            Err(CpuError::IllegalInstruction(invalid_shift))
+        );
     }
 
     // --- Тесты для Load инструкций (0x03) и JALR (0x67) ---
@@ -324,11 +512,46 @@ mod tests {
     #[test]
     fn test_decode_load_instructions() {
         let cases = [
-            (0x0, Instruction::Lb { rd: 4, rs1: 5, imm: -16 }),
-            (0x1, Instruction::Lh { rd: 4, rs1: 5, imm: -16 }),
-            (0x2, Instruction::Lw { rd: 4, rs1: 5, imm: -16 }),
-            (0x4, Instruction::Lbu { rd: 4, rs1: 5, imm: -16 }),
-            (0x5, Instruction::Lhu { rd: 4, rs1: 5, imm: -16 }),
+            (
+                0x0,
+                Instruction::Lb {
+                    rd: 4,
+                    rs1: 5,
+                    imm: -16,
+                },
+            ),
+            (
+                0x1,
+                Instruction::Lh {
+                    rd: 4,
+                    rs1: 5,
+                    imm: -16,
+                },
+            ),
+            (
+                0x2,
+                Instruction::Lw {
+                    rd: 4,
+                    rs1: 5,
+                    imm: -16,
+                },
+            ),
+            (
+                0x4,
+                Instruction::Lbu {
+                    rd: 4,
+                    rs1: 5,
+                    imm: -16,
+                },
+            ),
+            (
+                0x5,
+                Instruction::Lhu {
+                    rd: 4,
+                    rs1: 5,
+                    imm: -16,
+                },
+            ),
         ];
 
         for (funct3, expected) in cases {
@@ -338,16 +561,29 @@ mod tests {
 
         // Невалидный funct3 (0x3 или 0x7)
         let invalid_load = encode_i_type(OPCODE_LOAD, 4, 0x3, 5, 0);
-        assert_eq!(decode(invalid_load), Err(CpuError::IllegalInstruction(invalid_load)));
+        assert_eq!(
+            decode(invalid_load),
+            Err(CpuError::IllegalInstruction(invalid_load))
+        );
     }
 
     #[test]
     fn test_decode_jalr() {
         let raw = encode_i_type(OPCODE_JALR, 1, 0x0, 2, 100);
-        assert_eq!(decode(raw), Ok(Instruction::Jalr { rd: 1, rs1: 2, imm: 100 }));
+        assert_eq!(
+            decode(raw),
+            Ok(Instruction::Jalr {
+                rd: 1,
+                rs1: 2,
+                imm: 100
+            })
+        );
 
         let invalid_jalr = encode_i_type(OPCODE_JALR, 1, 0x1, 2, 100);
-        assert_eq!(decode(invalid_jalr), Err(CpuError::IllegalInstruction(invalid_jalr)));
+        assert_eq!(
+            decode(invalid_jalr),
+            Err(CpuError::IllegalInstruction(invalid_jalr))
+        );
     }
 
     // --- Тесты для Store инструкций (0x23) ---
@@ -355,9 +591,30 @@ mod tests {
     #[test]
     fn test_decode_store_instructions() {
         let cases = [
-            (0x0, Instruction::Sb { rs1: 8, rs2: 9, imm: -40 }),
-            (0x1, Instruction::Sh { rs1: 8, rs2: 9, imm: -40 }),
-            (0x2, Instruction::Sw { rs1: 8, rs2: 9, imm: -40 }),
+            (
+                0x0,
+                Instruction::Sb {
+                    rs1: 8,
+                    rs2: 9,
+                    imm: -40,
+                },
+            ),
+            (
+                0x1,
+                Instruction::Sh {
+                    rs1: 8,
+                    rs2: 9,
+                    imm: -40,
+                },
+            ),
+            (
+                0x2,
+                Instruction::Sw {
+                    rs1: 8,
+                    rs2: 9,
+                    imm: -40,
+                },
+            ),
         ];
 
         for (funct3, expected) in cases {
@@ -366,7 +623,10 @@ mod tests {
         }
 
         let invalid_store = encode_s_type(OPCODE_STORE, 0x3, 8, 9, 16);
-        assert_eq!(decode(invalid_store), Err(CpuError::IllegalInstruction(invalid_store)));
+        assert_eq!(
+            decode(invalid_store),
+            Err(CpuError::IllegalInstruction(invalid_store))
+        );
     }
 
     // --- Тесты для Branch инструкций (0x63) ---
@@ -374,12 +634,54 @@ mod tests {
     #[test]
     fn test_decode_branch_instructions() {
         let cases = [
-            (0x0, Instruction::Beq { rs1: 10, rs2: 11, imm: 24 }),
-            (0x1, Instruction::Bne { rs1: 10, rs2: 11, imm: 24 }),
-            (0x4, Instruction::Blt { rs1: 10, rs2: 11, imm: 24 }),
-            (0x5, Instruction::Bge { rs1: 10, rs2: 11, imm: 24 }),
-            (0x6, Instruction::Bltu { rs1: 10, rs2: 11, imm: 24 }),
-            (0x7, Instruction::Bgeu { rs1: 10, rs2: 11, imm: 24 }),
+            (
+                0x0,
+                Instruction::Beq {
+                    rs1: 10,
+                    rs2: 11,
+                    imm: 24,
+                },
+            ),
+            (
+                0x1,
+                Instruction::Bne {
+                    rs1: 10,
+                    rs2: 11,
+                    imm: 24,
+                },
+            ),
+            (
+                0x4,
+                Instruction::Blt {
+                    rs1: 10,
+                    rs2: 11,
+                    imm: 24,
+                },
+            ),
+            (
+                0x5,
+                Instruction::Bge {
+                    rs1: 10,
+                    rs2: 11,
+                    imm: 24,
+                },
+            ),
+            (
+                0x6,
+                Instruction::Bltu {
+                    rs1: 10,
+                    rs2: 11,
+                    imm: 24,
+                },
+            ),
+            (
+                0x7,
+                Instruction::Bgeu {
+                    rs1: 10,
+                    rs2: 11,
+                    imm: 24,
+                },
+            ),
         ];
 
         for (funct3, expected) in cases {
@@ -391,12 +693,19 @@ mod tests {
         let raw_neg = encode_b_type(OPCODE_BRANCH, 0x0, 10, 11, -8);
         assert_eq!(
             decode(raw_neg),
-            Ok(Instruction::Beq { rs1: 10, rs2: 11, imm: -8 })
+            Ok(Instruction::Beq {
+                rs1: 10,
+                rs2: 11,
+                imm: -8
+            })
         );
 
         // Невалидный funct3 (0x2 или 0x3)
         let invalid_branch = encode_b_type(OPCODE_BRANCH, 0x2, 10, 11, 8);
-        assert_eq!(decode(invalid_branch), Err(CpuError::IllegalInstruction(invalid_branch)));
+        assert_eq!(
+            decode(invalid_branch),
+            Err(CpuError::IllegalInstruction(invalid_branch))
+        );
     }
 
     // --- Тесты для JAL и U-type инструкций (LUI, AUIPC) ---
@@ -415,10 +724,22 @@ mod tests {
         let imm_val = 0x1234_5000_u32 as i32;
 
         let raw_lui = encode_u_type(OPCODE_LUI, 7, imm_val);
-        assert_eq!(decode(raw_lui), Ok(Instruction::Lui { rd: 7, imm: imm_val }));
+        assert_eq!(
+            decode(raw_lui),
+            Ok(Instruction::Lui {
+                rd: 7,
+                imm: imm_val
+            })
+        );
 
         let raw_auipc = encode_u_type(OPCODE_AUIPC, 8, imm_val);
-        assert_eq!(decode(raw_auipc), Ok(Instruction::Auipc { rd: 8, imm: imm_val }));
+        assert_eq!(
+            decode(raw_auipc),
+            Ok(Instruction::Auipc {
+                rd: 8,
+                imm: imm_val
+            })
+        );
     }
 
     // --- Тесты для Системных и Custom инструкций ---
@@ -430,7 +751,10 @@ mod tests {
 
         // Любое другое значение для opcode 0x73 должно быть IllegalInstruction
         let invalid_sys = 0x0020_0073;
-        assert_eq!(decode(invalid_sys), Err(CpuError::IllegalInstruction(invalid_sys)));
+        assert_eq!(
+            decode(invalid_sys),
+            Err(CpuError::IllegalInstruction(invalid_sys))
+        );
     }
 
     #[test]
@@ -438,13 +762,19 @@ mod tests {
         let custom_0b = 0xDEAD_B00B;
         assert_eq!(
             decode(custom_0b),
-            Ok(Instruction::Custom { opcode: 0x0B, raw: custom_0b })
+            Ok(Instruction::Custom {
+                opcode: 0x0B,
+                raw: custom_0b
+            })
         );
 
         let custom_2b = 0x1234_502B;
         assert_eq!(
             decode(custom_2b),
-            Ok(Instruction::Custom { opcode: 0x2B, raw: custom_2b })
+            Ok(Instruction::Custom {
+                opcode: 0x2B,
+                raw: custom_2b
+            })
         );
     }
 }

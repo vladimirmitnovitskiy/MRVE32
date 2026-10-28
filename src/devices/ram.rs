@@ -6,7 +6,7 @@ pub struct Ram {
 }
 
 impl Ram {
-    pub fn new(size: usize) -> Self{
+    pub fn new(size: usize) -> Self {
         Self {
             data: vec![0; size],
         }
@@ -16,30 +16,27 @@ impl Ram {
 impl BusDevice for Ram {
     fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError> {
         let index = addr as usize;
-        if index < self.data.len(){
+        if index < self.data.len() {
             Ok(self.data[index])
-        }
-        else {
+        } else {
             Err(BusError::AddressNotFound(addr))
         }
     }
     fn read_u16(&mut self, addr: Reg) -> Result<u16, BusError> {
         let index = addr as usize;
-        if index + 2 <= self.data.len(){
+        if index + 2 <= self.data.len() {
             let bytes: [u8; 2] = self.data[index..index + 2].try_into().unwrap();
             Ok(u16::from_le_bytes(bytes))
-        }
-        else {
+        } else {
             Err(BusError::AddressNotFound(addr))
         }
     }
     fn read_u32(&mut self, addr: Reg) -> Result<u32, BusError> {
         let index = addr as usize;
-        if index + 4 <= self.data.len(){
+        if index + 4 <= self.data.len() {
             let bytes: [u8; 4] = self.data[index..index + 4].try_into().unwrap();
             Ok(u32::from_le_bytes(bytes))
-        }
-        else {
+        } else {
             Err(BusError::AddressNotFound(addr))
         }
     }
@@ -48,35 +45,31 @@ impl BusDevice for Ram {
         if index < self.data.len() {
             self.data[index] = val;
             Ok(())
-        }
-        else {
+        } else {
             Err(BusError::AddressNotFound(addr))
         }
     }
     fn write_u16(&mut self, addr: Reg, val: u16) -> Result<(), BusError> {
         let index = addr as usize;
-        if index + 2 <= self.data.len(){
+        if index + 2 <= self.data.len() {
             let bytes = val.to_le_bytes();
             self.data[index..index + 2].copy_from_slice(&bytes);
             Ok(())
-        }
-        else {
+        } else {
             Err(BusError::AddressNotFound(addr))
         }
     }
     fn write_u32(&mut self, addr: Reg, val: u32) -> Result<(), BusError> {
         let index = addr as usize;
-        if index + 4 <= self.data.len(){
+        if index + 4 <= self.data.len() {
             let bytes = val.to_le_bytes();
             self.data[index..index + 4].copy_from_slice(&bytes);
             Ok(())
-        }
-        else {
+        } else {
             Err(BusError::AddressNotFound(addr))
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -99,7 +92,7 @@ mod tests {
     #[test]
     fn test_u8_read_write() {
         let mut ram = setup_ram();
-        
+
         assert!(ram.write_u8(0, 0x42).is_ok());
         assert_eq!(ram.read_u8(0).unwrap(), 0x42);
 
