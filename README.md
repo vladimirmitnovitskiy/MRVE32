@@ -43,11 +43,13 @@ memory-mapped I/O (MMIO) bus and an extension slot for domain-specific instructi
         | (Little-Endian MM) |  |  (UART, Timers, IP)|
         +--------------------+  +--------------------+
 ```
-──────
+---
+
 ## Rust Usage
 
-Add MRVE32 to your Cargo.toml:
+Add MRVE32 to your `Cargo.toml`, then use the core:
 
+```rust
 use mrve32::{Bus, Cpu, Ram};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,15 +69,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-──────
+```
+
+---
 ## Python Testbenches (PyO3)
 
 Build the Python extension module:
 
+```bash
 cargo build --features python && cp target/debug/libmrve32.so ./mrve32.so
+```
 
 Script bare-metal execution from Python:
 
+```python
 import mrve32
 
 # Initialize core and RAM mapped at 0x1000
@@ -92,15 +99,24 @@ for _ in range(3):
 
 assert emu.read_reg(3) == 42
 assert emu.pc == 0x100C
-──────
+```
+
+
+---
 ## Verification & Quality Assurance
 
 Run the test suite:
+
+```bash
 cargo test
+```
+
 Run static analysis and linter checks:
 
+```bash
 cargo clippy --all-targets --all-features -- -D warnings
-──────
+```
+---
 ## License
 
 Licensed under Apache License, Version 2.0.
