@@ -42,6 +42,7 @@ memory-mapped I/O (MMIO) bus and an extension slot for domain-specific instructi
         |        RAM         |  | Custom Peripherals |
         | (Little-Endian MM) |  |  (UART, Timers, IP)|
         +--------------------+  +--------------------+
+```
 ──────
 ## Rust Usage
 
