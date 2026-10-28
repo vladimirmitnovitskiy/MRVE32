@@ -16,9 +16,9 @@ pub enum BusError {
 }
 
 impl Default for Bus {
-        fn default() -> Self {
-            Self::new()
-        }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub trait BusDevice {
