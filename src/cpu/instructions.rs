@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
-    // arithmetic registers
+    // arithmetic registers. R-type
     Add { rd: usize, rs1: usize, rs2: usize },
     Sub { rd: usize, rs1: usize, rs2: usize },
     Sll { rd: usize, rs1: usize, rs2: usize },
@@ -12,7 +12,7 @@ pub enum Instruction {
     Or { rd: usize, rs1: usize, rs2: usize },
     And { rd: usize, rs1: usize, rs2: usize },
 
-    // arithmetic with const
+    // arithmetic with const. I-type
     Addi { rd: usize, rs1: usize, imm: i32 },
     Slti { rd: usize, rs1: usize, imm: i32 },
     Sltiu { rd: usize, rs1: usize, imm: i32 },
