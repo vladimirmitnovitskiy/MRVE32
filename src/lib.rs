@@ -9,3 +9,6 @@ pub use cpu::instructions::Instruction;
 pub use cpu::{Cpu, CpuError};
 pub use devices::ram::Ram;
 pub use types::Reg;
+
+#[cfg(feature = "python")]
+pub mod python;
