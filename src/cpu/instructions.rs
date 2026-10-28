@@ -11,6 +11,15 @@ pub enum Instruction {
     Sra { rd: usize, rs1: usize, rs2: usize },
     Or { rd: usize, rs1: usize, rs2: usize },
     And { rd: usize, rs1: usize, rs2: usize },
+    // RV32M Extension
+    Mul { rd: usize, rs1: usize, rs2: usize },
+    Mulh { rd: usize, rs1: usize, rs2: usize },
+    Mulhsu { rd: usize, rs1: usize, rs2: usize },
+    Mulhu { rd: usize, rs1: usize, rs2: usize },
+    Div { rd: usize, rs1: usize, rs2: usize },
+    Divu { rd: usize, rs1: usize, rs2: usize },
+    Rem { rd: usize, rs1: usize, rs2: usize },
+    Remu { rd: usize, rs1: usize, rs2: usize },
 
     // arithmetic with const. I-type
     Addi { rd: usize, rs1: usize, imm: i32 },

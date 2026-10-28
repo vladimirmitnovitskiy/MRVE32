@@ -33,6 +33,16 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
             (0x5, 0x20) => Ok(Instruction::Sra { rd, rs1, rs2 }),
             (0x6, 0x00) => Ok(Instruction::Or { rd, rs1, rs2 }),
             (0x7, 0x00) => Ok(Instruction::And { rd, rs1, rs2 }),
+            // RV32M (Multiplication & Division)
+            (0x0, 0x01) => Ok(Instruction::Mul { rd, rs1, rs2 }),
+            (0x1, 0x01) => Ok(Instruction::Mulh { rd, rs1, rs2 }),
+            (0x2, 0x01) => Ok(Instruction::Mulhsu { rd, rs1, rs2 }),
+            (0x3, 0x01) => Ok(Instruction::Mulhu { rd, rs1, rs2 }),
+            (0x4, 0x01) => Ok(Instruction::Div { rd, rs1, rs2 }),
+            (0x5, 0x01) => Ok(Instruction::Divu { rd, rs1, rs2 }),
+            (0x6, 0x01) => Ok(Instruction::Rem { rd, rs1, rs2 }),
+            (0x7, 0x01) => Ok(Instruction::Remu { rd, rs1, rs2 }),
+
             _ => Err(CpuError::IllegalInstruction(raw)),
         },
         0x13 => match funct3 {

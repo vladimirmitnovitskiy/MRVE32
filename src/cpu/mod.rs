@@ -135,6 +135,65 @@ impl Cpu {
                 };
                 self.write_reg(rd, res);
             }
+            // RV32M
+            Instruction::Mul { rd, rs1, rs2 } => {
+                let res = self.read_reg(rs1).wrapping_mul(self.read_reg(rs2));
+                self.write_reg(rd, res);
+            }
+            Instruction::Mulh { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1) as i32 as i64;
+                let b = self.read_reg(rs2) as i32 as i64;
+                let res = ((a * b) >> 32) as u32;
+                self.write_reg(rd, res);
+            }
+            Instruction::Mulhsu { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1) as i32 as i64;
+                let b = self.read_reg(rs2) as u64 as i64;
+                let res = ((a * b) >> 32) as u32;
+                self.write_reg(rd, res);
+            }
+            Instruction::Mulhu { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1) as u64;
+                let b = self.read_reg(rs2) as u64;
+                let res = ((a * b) >> 32) as u32;
+                self.write_reg(rd, res);
+            }
+            Instruction::Div { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1) as i32;
+                let b = self.read_reg(rs2) as i32;
+                let res = if b == 0 {
+                    -1_i32 as u32
+                } else if a == i32::MIN && b == -1 {
+                    i32::MIN as u32
+                } else {
+                    (a / b) as u32
+                };
+                self.write_reg(rd, res);
+            }
+            Instruction::Divu { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1);
+                let b = self.read_reg(rs2);
+                let res = if b == 0 { u32::MAX } else { a / b };
+                self.write_reg(rd, res);
+            }
+            Instruction::Rem { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1) as i32;
+                let b = self.read_reg(rs2) as i32;
+                let res = if b == 0 {
+                    a as u32
+                } else if a == i32::MIN && b == -1 {
+                    0
+                } else {
+                    (a % b) as u32
+                };
+                self.write_reg(rd, res);
+            }
+            Instruction::Remu { rd, rs1, rs2 } => {
+                let a = self.read_reg(rs1);
+                let b = self.read_reg(rs2);
+                let res = if b == 0 { a } else { a % b };
+                self.write_reg(rd, res);
+            }
 
             // I-type
             Instruction::Addi { rd, rs1, imm } => {
