@@ -58,10 +58,10 @@ pub enum Instruction {
     Fence,
     Mret,
     // Zicsr
-    Csrrw {rd: usize, rs1: usize, csr: u16},
-    Csrrs {rd: usize, rs1: usize, csr: u16},
-    Csrrc {rd: usize, rs1: usize, csr: u16},
-    Csrrwi {rd: usize, uimm: u32, csr: u16},
-    Csrrsi {rd: usize, uimm: u32, csr: u16},
-    Csrrci {rd: usize, uimm: u32, csr: u16},
+    Csrrw { rd: usize, rs1: usize, csr: u16 },
+    Csrrs { rd: usize, rs1: usize, csr: u16 },
+    Csrrc { rd: usize, rs1: usize, csr: u16 },
+    Csrrwi { rd: usize, uimm: u32, csr: u16 },
+    Csrrsi { rd: usize, uimm: u32, csr: u16 },
+    Csrrci { rd: usize, uimm: u32, csr: u16 },
 }

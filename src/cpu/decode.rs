@@ -126,7 +126,7 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
         0x6F => Ok(Instruction::Jal { rd, imm: imm_j }),
         0x37 => Ok(Instruction::Lui { rd, imm: imm_u }),
         0x17 => Ok(Instruction::Auipc { rd, imm: imm_u }),
-        0x73 =>  {
+        0x73 => {
             let csr = ((raw >> 20) & 0xFFF) as u16;
             let uimm = (raw >> 15) & 0x1F;
 
@@ -145,7 +145,7 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
                 0x7 => Ok(Instruction::Csrrci { rd, uimm, csr }),
                 _ => Err(CpuError::IllegalInstruction(raw)),
             }
-        },
+        }
         0x0F => Ok(Instruction::Fence),
         _ => Err(CpuError::IllegalInstruction(raw)),
     }

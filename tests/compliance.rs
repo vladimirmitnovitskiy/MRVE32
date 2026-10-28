@@ -12,7 +12,11 @@ fn test_official_rv32ui_suite() {
         .collect();
     entries.sort();
 
-    assert_eq!(entries.len(), 42, "Expected exactly 42 official RV32UI tests");
+    assert_eq!(
+        entries.len(),
+        42,
+        "Expected exactly 42 official RV32UI tests"
+    );
 
     let mut passed = 0;
     let mut failed = 0;
@@ -35,7 +39,10 @@ fn test_official_rv32ui_suite() {
 
         for step in 0..50_000 {
             if let Err(e) = cpu.step(&mut bus) {
-                eprintln!("[FAIL] {}: CPU error at step {}: {:?}, pc=0x{:08x}", name, step, e, cpu.pc);
+                eprintln!(
+                    "[FAIL] {}: CPU error at step {}: {:?}, pc=0x{:08x}",
+                    name, step, e, cpu.pc
+                );
                 break;
             }
 

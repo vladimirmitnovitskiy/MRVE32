@@ -4,8 +4,8 @@ use crate::cpu::instructions::Instruction;
 use crate::types::Reg;
 
 pub mod coprocessor;
-pub mod decode;
 pub mod csr;
+pub mod decode;
 pub mod instructions;
 
 use csr::CsrFile;
@@ -261,11 +261,10 @@ impl Cpu {
                 self.write_csr(csr::MCAUSE, 11);
                 let mtvec = self.read_csr(csr::MTVEC);
                 next_pc = mtvec & !0b11;
-            },
+            }
             Instruction::Mret => {
                 next_pc = self.read_csr(csr::MEPC);
-            },
-
+            }
 
             // Custom
             Instruction::Custom { opcode, raw } => {
@@ -275,51 +274,50 @@ impl Cpu {
                 } else {
                     return Err(CpuError::IllegalInstruction(raw));
                 }
-            },
+            }
 
             // Zicsr
             Instruction::Fence | Instruction::Ebreak => {
                 //NOP
-            },
+            }
             Instruction::Csrrw { rd, rs1, csr } => {
                 let old = self.read_csr(csr);
                 self.write_csr(csr, self.read_reg(rs1));
                 self.write_reg(rd, old);
-            },
+            }
             Instruction::Csrrs { rd, rs1, csr } => {
                 let old = self.read_csr(csr);
                 if rs1 != 0 {
                     self.write_csr(csr, old | self.read_reg(rs1));
                 }
                 self.write_reg(rd, old);
-            },
+            }
             Instruction::Csrrc { rd, rs1, csr } => {
                 let old = self.read_csr(csr);
                 if rs1 != 0 {
                     self.write_csr(csr, old & !self.read_reg(rs1));
                 }
                 self.write_reg(rd, old);
-            },
+            }
             Instruction::Csrrwi { rd, uimm, csr } => {
                 let old = self.read_csr(csr);
                 self.write_csr(csr, uimm);
                 self.write_reg(rd, old);
-            },
+            }
             Instruction::Csrrsi { rd, uimm, csr } => {
                 let old = self.read_csr(csr);
                 if uimm != 0 {
                     self.write_csr(csr, old | uimm);
                 }
                 self.write_reg(rd, old);
-            },
+            }
             Instruction::Csrrci { rd, uimm, csr } => {
                 let old = self.read_csr(csr);
                 if uimm != 0 {
                     self.write_csr(csr, old & !uimm);
                 }
                 self.write_reg(rd, old);
-            },
-
+            }
         }
 
         self.pc = next_pc;
@@ -952,5 +950,4 @@ mod tests {
         assert_eq!(cpu.read_csr(csr::MEPC), 0x1000);
         assert_eq!(cpu.read_csr(csr::MCAUSE), 11); // Environment call from M-mode
     }
-
 }
