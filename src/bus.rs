@@ -15,6 +15,12 @@ pub enum BusError {
     AddressNotFound(Reg),
 }
 
+impl Default for Bus {
+        fn default() -> Self {
+            Self::new()
+        }
+}
+
 pub trait BusDevice {
     fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError>;
     fn read_u16(&mut self, addr: Reg) -> Result<u16, BusError>;
