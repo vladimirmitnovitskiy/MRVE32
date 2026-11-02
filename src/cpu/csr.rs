@@ -42,6 +42,10 @@ pub const CYCLE: u16 = 0xC00;
 pub const INSTRET: u16 = 0xC02;
 pub const CYCLEH: u16 = 0xC80;
 pub const INSTRETH: u16 = 0xC82;
+/// `time`/`timeh` are not implemented (they trap; read `mtime` from the
+/// CLINT); the numbers are used by the disassembler.
+pub const TIME: u16 = 0xC01;
+pub const TIMEH: u16 = 0xC81;
 
 pub const MSTATUS_MIE: Reg = 1 << 3; // Machine Interrupt Enable
 pub const MSTATUS_MPIE: Reg = 1 << 7; // Machine Previous Interrupt Enable
@@ -55,8 +59,8 @@ pub const MCOUNTINHIBIT_CY: Reg = 1 << 0; // Inhibit mcycle
 pub const MCOUNTINHIBIT_IR: Reg = 1 << 2; // Inhibit minstret
 
 /// `misa`: MXL=1 (XLEN=32), extensions I and M.
-/// `misa` without C: MXL = 32, I, M.
-pub const MISA_VALUE: Reg = (1 << 30) | (1 << (b'I' - b'A')) | (1 << (b'M' - b'A'));
+/// `misa` without C: MXL = 32, A, I, M.
+pub const MISA_VALUE: Reg = (1 << 30) | 1 | (1 << (b'I' - b'A')) | (1 << (b'M' - b'A'));
 /// `misa.C`.
 pub const MISA_C: Reg = 1 << (b'C' - b'A');
 
@@ -245,11 +249,11 @@ mod tests {
     #[test]
     fn test_misa_reports_extensions_and_ignores_writes() {
         let mut csrs = CsrFile::new();
-        assert_eq!(csrs.read(MISA), Ok(0x4000_1104), "RV32IMC");
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1105), "RV32IMAC");
         assert_eq!(csrs.write(MISA, 0), Ok(()));
-        assert_eq!(csrs.read(MISA), Ok(0x4000_1104));
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1105));
         csrs.compressed = false;
-        assert_eq!(csrs.read(MISA), Ok(0x4000_1100), "RV32IM");
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1101), "RV32IMA");
     }
 
     #[test]

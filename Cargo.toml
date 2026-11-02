@@ -3,10 +3,18 @@ name = "mrve32"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "RV32IMC machine-mode RISC-V MCU emulator with pluggable memory-mapped devices"
+description = "RV32IMAC machine-mode RISC-V MCU emulator with pluggable memory-mapped devices"
+rust-version = "1.88"
+repository = "https://github.com/vladimirmitnovitskiy/MRVE32"
+readme = "README.md"
+keywords = ["risc-v", "emulator", "riscv", "microcontroller", "simulator"]
+categories = ["emulators", "simulation", "embedded"]
+# Python package sources, fuzzing and CI files are not part of the crate.
+exclude = ["/python", "/tests/python", "/fuzz", "/.github", "/pyproject.toml", "/modules"]
 
 [workspace]
 members = ["modules/snn"]
+exclude = ["fuzz"]
 
 [dependencies]
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"], optional = true }
@@ -17,3 +25,7 @@ default = []
 python-device = ["dep:pyo3"]
 # The `mrve32` Python package itself.
 python = ["python-device"]
+
+[[bench]]
+name = "mips"
+harness = false

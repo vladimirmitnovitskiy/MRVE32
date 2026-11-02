@@ -4,6 +4,7 @@
 use std::fmt;
 
 use super::csr;
+use super::csr_names::CSR_NAMES;
 use super::decode::decode;
 use super::decode_c::decode_compressed;
 use super::instructions::Instruction;
@@ -20,35 +21,13 @@ pub fn reg_name(reg: usize) -> &'static str {
     ABI_NAMES[reg & 31]
 }
 
-/// Name of a CSR implemented by this emulator, if any.
+/// Standard name of a CSR (the same set GNU objdump knows, including CSRs
+/// this emulator does not implement), if any.
 pub fn csr_name(csr: u16) -> Option<&'static str> {
-    Some(match csr {
-        csr::MSTATUS => "mstatus",
-        csr::MISA => "misa",
-        csr::MIE => "mie",
-        csr::MTVEC => "mtvec",
-        csr::MSTATUSH => "mstatush",
-        csr::MCOUNTINHIBIT => "mcountinhibit",
-        csr::MSCRATCH => "mscratch",
-        csr::MEPC => "mepc",
-        csr::MCAUSE => "mcause",
-        csr::MTVAL => "mtval",
-        csr::MIP => "mip",
-        csr::MCYCLE => "mcycle",
-        csr::MINSTRET => "minstret",
-        csr::MCYCLEH => "mcycleh",
-        csr::MINSTRETH => "minstreth",
-        csr::CYCLE => "cycle",
-        csr::INSTRET => "instret",
-        csr::CYCLEH => "cycleh",
-        csr::INSTRETH => "instreth",
-        csr::MVENDORID => "mvendorid",
-        csr::MARCHID => "marchid",
-        csr::MIMPID => "mimpid",
-        csr::MHARTID => "mhartid",
-        csr::MCONFIGPTR => "mconfigptr",
-        _ => return None,
-    })
+    CSR_NAMES
+        .binary_search_by_key(&csr, |&(n, _)| n)
+        .ok()
+        .map(|i| CSR_NAMES[i].1)
 }
 
 /// Whether an instruction word (or its low half) is a 16-bit instruction.
@@ -66,8 +45,12 @@ pub fn is_compressed(raw: u32) -> bool {
 /// assert_eq!(disassemble(0x00F00093, None), "li ra, 15");
 /// assert_eq!(disassemble(0x0080006F, Some(0x8000_0000)), "j 0x80000008");
 /// assert_eq!(disassemble(0x852e, None), "mv a0, a1"); // c.mv
-/// assert_eq!(disassemble(0xFFFFFFFF, None), ".word 0xffffffff");
+/// assert_eq!(disassemble(0xFFFFFFFF, None), ".insn 4, 0xffffffff");
 /// ```
+///
+/// Words this emulator cannot execute are printed as `.insn 2, 0x....` or
+/// `.insn 4, 0x....` (which GNU as accepts back). Fences with reserved
+/// fields execute as normal fences but are printed as `.insn`, like objdump.
 pub fn disassemble(raw: u32, pc: Option<Reg>) -> String {
     if is_compressed(raw) {
         let half = raw as u16;
@@ -79,17 +62,32 @@ pub fn disassemble(raw: u32, pc: Option<Reg>) -> String {
             }
             .to_string(),
             Err(_) if half == 0 => "unimp".to_string(),
-            Err(_) => format!(".short 0x{half:04x}"),
+            Err(_) => format!(".insn 2, 0x{half:04x}"),
         };
     }
     match decode(raw) {
-        Ok(inst) => Disasm {
+        Ok(inst) if !has_reserved_fields(raw, &inst) => Disasm {
             inst,
             pc,
             compressed: false,
         }
         .to_string(),
-        Err(_) => format!(".word 0x{raw:08x}"),
+        // objdump pads to 4 or 8 hex digits.
+        _ if raw <= 0xFFFF => format!(".insn 4, 0x{raw:04x}"),
+        _ => format!(".insn 4, 0x{raw:08x}"),
+    }
+}
+
+/// Encodings that execute but that objdump does not print as instructions:
+/// fences with non-zero `rd`/`rs1`, a reserved `fm`, or a non-zero FENCE.I
+/// `imm`/`rs1`/`rd`.
+fn has_reserved_fields(raw: u32, inst: &Instruction) -> bool {
+    match *inst {
+        Instruction::Fence { fm, pred, succ } => {
+            raw & 0x000F_8F80 != 0 || !(fm == 0 || (fm == 8 && pred == 3 && succ == 3))
+        }
+        Instruction::FenceI => raw & 0xFFFF_8F80 != 0,
+        _ => false,
     }
 }
 
@@ -121,8 +119,30 @@ impl Disasm {
     }
 }
 
+fn ordering(aq: bool, rl: bool) -> &'static str {
+    match (aq, rl) {
+        (false, false) => "",
+        (true, false) => ".aq",
+        (false, true) => ".rl",
+        (true, true) => ".aqrl",
+    }
+}
+
 fn csr_str(csr: u16) -> String {
-    csr_name(csr).map_or_else(|| format!("0x{csr:03x}"), str::to_string)
+    csr_name(csr).map_or_else(|| format!("0x{csr:x}"), str::to_string)
+}
+
+/// `iorw` subset of a fence's predecessor/successor set.
+fn fence_set(bits: u8) -> String {
+    if bits == 0 {
+        return "unknown".to_string();
+    }
+    "iorw"
+        .chars()
+        .enumerate()
+        .filter(|&(i, _)| bits & (8 >> i) != 0)
+        .map(|(_, c)| c)
+        .collect()
 }
 
 impl fmt::Display for Disasm {
@@ -158,6 +178,8 @@ impl fmt::Display for Disasm {
             I::Sub { rd, rs1: 0, rs2 } => write!(f, "neg {}, {}", r(rd), r(rs2)),
             I::Sub { rd, rs1, rs2 } => rtype!("sub", rd, rs1, rs2),
             I::Sll { rd, rs1, rs2 } => rtype!("sll", rd, rs1, rs2),
+            I::Slt { rd, rs1, rs2: 0 } => write!(f, "sltz {}, {}", r(rd), r(rs1)),
+            I::Slt { rd, rs1: 0, rs2 } => write!(f, "sgtz {}, {}", r(rd), r(rs2)),
             I::Slt { rd, rs1, rs2 } => rtype!("slt", rd, rs1, rs2),
             I::Sltu { rd, rs1: 0, rs2 } => write!(f, "snez {}, {}", r(rd), r(rs2)),
             I::Sltu { rd, rs1, rs2 } => rtype!("sltu", rd, rs1, rs2),
@@ -181,7 +203,10 @@ impl fmt::Display for Disasm {
                 imm: 0,
             } => write!(f, "nop"),
             I::Addi { rd, rs1: 0, imm } => write!(f, "li {}, {}", r(rd), imm),
-            I::Addi { rd, rs1, imm: 0 } => write!(f, "mv {}, {}", r(rd), r(rs1)),
+            // c.addi rd, 0 (a HINT) is shown expanded, not as mv.
+            I::Addi { rd, rs1, imm: 0 } if !self.compressed => {
+                write!(f, "mv {}, {}", r(rd), r(rs1))
+            }
             I::Addi { rd, rs1, imm } => itype!("addi", rd, rs1, imm),
             I::Slti { rd, rs1, imm } => itype!("slti", rd, rs1, imm),
             I::Sltiu { rd, rs1, imm: 1 } => write!(f, "seqz {}, {}", r(rd), r(rs1)),
@@ -212,7 +237,19 @@ impl fmt::Display for Disasm {
                 write!(f, "bnez {}, {}", r(rs1), self.target(imm))
             }
             I::Bne { rs1, rs2, imm } => branch!("bne", rs1, rs2, imm),
+            I::Blt { rs1, rs2: 0, imm } => {
+                write!(f, "bltz {}, {}", r(rs1), self.target(imm))
+            }
+            I::Blt { rs1: 0, rs2, imm } => {
+                write!(f, "bgtz {}, {}", r(rs2), self.target(imm))
+            }
             I::Blt { rs1, rs2, imm } => branch!("blt", rs1, rs2, imm),
+            I::Bge { rs1: 0, rs2, imm } => {
+                write!(f, "blez {}, {}", r(rs2), self.target(imm))
+            }
+            I::Bge { rs1, rs2: 0, imm } => {
+                write!(f, "bgez {}, {}", r(rs1), self.target(imm))
+            }
             I::Bge { rs1, rs2, imm } => branch!("bge", rs1, rs2, imm),
             I::Bltu { rs1, rs2, imm } => branch!("bltu", rs1, rs2, imm),
             I::Bgeu { rs1, rs2, imm } => branch!("bgeu", rs1, rs2, imm),
@@ -229,12 +266,56 @@ impl fmt::Display for Disasm {
                 imm: 0,
             } => write!(f, "ret"),
             I::Jalr { rd: 0, rs1, imm: 0 } => write!(f, "jr {}", r(rs1)),
+            I::Jalr { rd: 0, rs1, imm } => write!(f, "jr {}({})", imm, r(rs1)),
             I::Jalr { rd: 1, rs1, imm: 0 } => write!(f, "jalr {}", r(rs1)),
+            I::Jalr { rd: 1, rs1, imm } => write!(f, "jalr {}({})", imm, r(rs1)),
+            I::Jalr { rd, rs1, imm: 0 } => write!(f, "jalr {}, {}", r(rd), r(rs1)),
             I::Jalr { rd, rs1, imm } => mem!("jalr", rd, rs1, imm),
 
+            I::LrW { rd, rs1, aq, rl } => {
+                write!(f, "lr.w{} {}, ({})", ordering(aq, rl), r(rd), r(rs1))
+            }
+            I::ScW {
+                rd,
+                rs1,
+                rs2,
+                aq,
+                rl,
+            } => write!(
+                f,
+                "sc.w{} {}, {}, ({})",
+                ordering(aq, rl),
+                r(rd),
+                r(rs2),
+                r(rs1)
+            ),
+            I::Amo {
+                op,
+                rd,
+                rs1,
+                rs2,
+                aq,
+                rl,
+            } => write!(
+                f,
+                "{}{} {}, {}, ({})",
+                op.mnemonic(),
+                ordering(aq, rl),
+                r(rd),
+                r(rs2),
+                r(rs1)
+            ),
             I::Ecall => write!(f, "ecall"),
             I::Ebreak => write!(f, "ebreak"),
-            I::Fence => write!(f, "fence"),
+            I::Fence {
+                fm: 0,
+                pred: 0xF,
+                succ: 0xF,
+            } => write!(f, "fence"),
+            I::Fence { fm: 8, .. } => write!(f, "fence.tso"),
+            I::Fence { pred, succ, .. } => {
+                write!(f, "fence {}, {}", fence_set(pred), fence_set(succ))
+            }
             I::FenceI => write!(f, "fence.i"),
             I::Mret => write!(f, "mret"),
             I::Wfi => write!(f, "wfi"),
@@ -248,6 +329,8 @@ impl fmt::Display for Disasm {
                 csr::CYCLEH => write!(f, "rdcycleh {}", r(rd)),
                 csr::INSTRET => write!(f, "rdinstret {}", r(rd)),
                 csr::INSTRETH => write!(f, "rdinstreth {}", r(rd)),
+                csr::TIME => write!(f, "rdtime {}", r(rd)),
+                csr::TIMEH => write!(f, "rdtimeh {}", r(rd)),
                 _ => write!(f, "csrr {}, {}", r(rd), csr_str(csr)),
             },
             I::Csrrw { rd: 0, rs1, csr } => write!(f, "csrw {}, {}", csr_str(csr), r(rs1)),
@@ -324,6 +407,25 @@ mod tests {
             (0x30200073, "mret"),
             (0x10500073, "wfi"),
             (0x0FF0000F, "fence"),
+            (0x0330000F, "fence rw, rw"),
+            (0x8330000F, "fence.tso"),
+            (0x0100000F, "fence w, unknown"),
+            (0x8FF0000F, ".insn 4, 0x8ff0000f"),
+            (0x0010100F, ".insn 4, 0x0010100f"),
+            (0x0000102F, ".insn 4, 0x102f"),
+            (0x00004463, "bltz zero, 0x80000008"),
+            (0x00005463, "blez zero, 0x80000008"),
+            (0x56504B63, "bgtz t0, 0x80000576"),
+            (0x0209DA63, "bgez s3, 0x80000034"),
+            (0x000022B3, "sltz t0, zero"),
+            (0x00D027B3, "sgtz a5, a3"),
+            (0x01000067, "jr 16(zero)"),
+            (0x010000E7, "jalr 16(zero)"),
+            (0x000E8BE7, "jalr s7, t4"),
+            (0x00102573, "csrr a0, fflags"),
+            (0x00C01573, "csrrw a0, 0xc, zero"),
+            (0xC0102573, "rdtime a0"),
+            (0x3D766F73, "csrrsi t5, pmpaddr39, 12"),
             (0x0000100F, "fence.i"),
             (0x30002573, "csrr a0, mstatus"),
             (0x30551073, "csrw mtvec, a0"),
@@ -331,6 +433,19 @@ mod tests {
             (0x34151573, "csrrw a0, mepc, a0"),
             (0xC0002573, "rdcycle a0"),
             (0x7C002573, "csrr a0, 0x7c0"),
+            (0x1005A52F, "lr.w a0, (a1)"),
+            (0x140122AF, "lr.w.aq t0, (sp)"),
+            (0x18C5A52F, "sc.w a0, a2, (a1)"),
+            (0x1AC5A52F, "sc.w.rl a0, a2, (a1)"),
+            (0x08B6252F, "amoswap.w a0, a1, (a2)"),
+            (0x06B6252F, "amoadd.w.aqrl a0, a1, (a2)"),
+            (0x20B6252F, "amoxor.w a0, a1, (a2)"),
+            (0x60B6252F, "amoand.w a0, a1, (a2)"),
+            (0x44B6252F, "amoor.w.aq a0, a1, (a2)"),
+            (0x80B6252F, "amomin.w a0, a1, (a2)"),
+            (0xA0B6252F, "amomax.w a0, a1, (a2)"),
+            (0xC0B6252F, "amominu.w a0, a1, (a2)"),
+            (0xE2B6202F, "amomaxu.w.rl zero, a1, (a2)"),
         ];
         for &(raw, text) in cases {
             assert_eq!(disassemble(raw, pc), text, "raw 0x{raw:08x}");
@@ -354,7 +469,8 @@ mod tests {
             (0x3ffd, Some(2), "jal 0x0"),
             (0x852e, None, "mv a0, a1"),
             (0x0000, None, "unimp"),
-            (0x2000, None, ".short 0x2000"),
+            (0x2000, None, ".insn 2, 0x2000"),
+            (0x0081, None, "addi ra, ra, 0"), // c.addi HINT
             (0x7179, None, "addi sp, sp, -48"),
             (0x757d, None, "lui a0, 0xfffff"),
             (0x8105, None, "srli a0, a0, 0x1"),
@@ -383,7 +499,7 @@ mod tests {
     #[test]
     fn test_invalid_and_custom() {
         assert_eq!(disassemble(0x0000_0000, None), "unimp");
-        assert_eq!(disassemble(0x0000_007F, None), ".word 0x0000007f");
+        assert_eq!(disassemble(0x0000_007F, None), ".insn 4, 0x007f");
         assert_eq!(disassemble(0x0000_000B, None), "custom-0 0x0000000b");
     }
 }

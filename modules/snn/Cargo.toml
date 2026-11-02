@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "SNN layer accelerator device module for the MRVE32 RISC-V emulator"
+rust-version = "1.88"
+repository = "https://github.com/vladimirmitnovitskiy/MRVE32"
+readme = "README.md"
+keywords = ["risc-v", "snn", "neuromorphic", "emulator", "accelerator"]
+categories = ["emulators", "simulation", "science"]
+exclude = ["/python", "/tests/python", "/pyproject.toml"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

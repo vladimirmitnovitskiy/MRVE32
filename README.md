@@ -5,23 +5,23 @@
 # MRVE32 (Modular RISC-V Emulator 32-bit)
 
 
-**A modular, deterministic RV32IMC bare-metal microcontroller emulator in Rust, with pluggable devices.**
+**A modular, deterministic RV32IMAC bare-metal microcontroller emulator in Rust, with pluggable devices.**
 
-MRVE32 is a lightweight RV32IMC emulator designed for bare-metal firmware execution, custom SoC peripheral development, and hardware coprocessor prototyping. The core is a CPU, a memory-mapped I/O (MMIO) bus, RAM, a CLINT and an ELF loader; every other peripheral is a **device module** that anyone can write — in Rust, in Python, or as a separately built native package through a small, versioned C ABI. Python bindings make it a testbench engine.
+MRVE32 is a lightweight RV32IMAC emulator designed for bare-metal firmware execution, custom SoC peripheral development, and hardware coprocessor prototyping. The core is a CPU, a memory-mapped I/O (MMIO) bus, RAM, a CLINT and an ELF loader; every other peripheral is a **device module** that anyone can write — in Rust, in Python, or as a separately built native package through a small, versioned C ABI. Python bindings make it a testbench engine.
 
 ---
 
 ## Key Architecture & Features
 
-- **RV32IMC + Zicsr + Zifencei**: base integer ISA, multiplication/division, compressed 16-bit instructions (C/Zca), CSR instructions, `fence`/`fence.i`. C can be switched off (`Cpu::set_compressed(false)`, `--isa rv32im`, `Emulator(compressed=False)`) to model an RV32IM core, with IALIGN = 32 and `misa.C` following it.
+- **RV32IMAC + Zicsr + Zifencei**: base integer ISA, multiplication/division, atomics (`lr.w`/`sc.w` and all `amo*.w`), compressed 16-bit instructions (C/Zca), CSR instructions, `fence`/`fence.i`. C can be switched off (`Cpu::set_compressed(false)`, `--isa rv32ima`, `Emulator(compressed=False)`) to model a core without it, with IALIGN = 32 and `misa.C` following it.
 - **Machine-mode privileged architecture**: precise synchronous exceptions (illegal instruction, misaligned jump target, instruction/load/store access faults, `ecall`, `ebreak`) delivered through `mtvec` with `mepc`/`mcause`/`mtval`/`mstatus` updated as hardware does; `mret`.
 - **Interrupts & timer**: machine external, software and timer interrupts with spec priority (MEI > MSI > MTI), direct and vectored `mtvec`, `wfi` that stalls the hart until an interrupt is pending. A CLINT device (`msip`, `mtime`, `mtimecmp`, SiFive memory map) is included; any device can raise interrupt lines through `BusDevice::irq_lines`.
 - **Counters (Zicntr)**: 64-bit `mcycle`/`minstret` with `mcountinhibit`, read-only `cycle`/`instret` shadows; `mhpmcounter*`/`mhpmevent*` are hardwired to zero.
 - **Strict CSR file**: accesses to unimplemented CSRs and writes to read-only CSRs raise illegal-instruction exceptions; WARL fields (`mstatus`, `mtvec`, `mepc`, `mie`, `mip`) are masked. Implemented: `mstatus`, `mstatush`, `misa`, `mie`, `mip`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mcountinhibit`, `mcycle[h]`, `minstret[h]`, `cycle[h]`, `instret[h]`, `mvendorid`, `marchid`, `mimpid`, `mhartid`, `mconfigptr`.
-- **Tested against riscv-tests**: passes all 65 applicable tests from [`riscv-tests`](https://github.com/riscv-software-src/riscv-tests) (`rv32ui-p-*`, `rv32um-p-*`, `rv32uc-p-rvc` and the M-mode `rv32mi-p-*` tests); every test except `rvc` runs on both RV32IMC and RV32IM. This is not the official RISC-V Architectural Certification suite (`riscv-arch-test`).
+- **Tested against riscv-tests**: passes all 75 applicable tests from [`riscv-tests`](https://github.com/riscv-software-src/riscv-tests) (`rv32ui-p-*`, `rv32um-p-*`, `rv32ua-p-*`, `rv32uc-p-rvc` and the M-mode `rv32mi-p-*` tests); every test except `rvc` runs both with and without C. This is not the official RISC-V Architectural Certification suite (`riscv-arch-test`).
 - **Bare-Metal & Deterministic**: Machine mode only, no MMU, virtual memory, or OS overhead.
 - **Modular Bus Architecture**: Devices, RAM, and memory-mapped peripherals implement the `BusDevice` trait. The bus performs offset translation and address routing.
-- **Hardware Coprocessor Slot**: extension point via `trait Coprocessor` for custom instructions (opcodes `0x0B` and `0x2B`). Register updates are committed atomically and `x0` stays zero.
+- **Hardware Coprocessor Slot**: extension point via `trait Coprocessor` (or a Python object, `Emulator.set_coprocessor`) for custom instructions (opcodes `0x0B` and `0x2B`). Register updates are committed atomically and `x0` stays zero.
 - **Unidirectional Ownership**: Clean Rust ownership model (`cpu.step(&mut bus)`). The CPU core maintains zero references to the system bus.
 - **No dependencies**: the core library depends only on Rust `std`.
 - **Standard peripherals**: RAM, CLINT, an NS16550A-compatible UART and a `sifive,test0` test finisher (firmware sets the exit status), in the QEMU `virt` register layout so existing drivers work unchanged.
@@ -39,8 +39,8 @@ Modules live in `modules/` for now but depend on the core only through its publi
 
 ### Not implemented (yet)
 
-The `time`/`timeh` CSRs (read `mtime` from the CLINT instead), an interrupt controller (PLIC; the UART drives MEIP directly), User/Supervisor modes, PMP, debug triggers, HTIF/semihosting, the A and F/D extensions, and Zcb/Zcmp.
-Build firmware with `-march=rv32imc_zicsr_zifencei -mabi=ilp32` (or `rv32im_...`). Misaligned loads and stores are performed in hardware rather than trapped.
+The `time`/`timeh` CSRs (read `mtime` from the CLINT instead), an interrupt controller (PLIC; the UART drives MEIP directly), User/Supervisor modes, PMP, debug triggers, HTIF/semihosting, the F/D extensions, and Zcb/Zcmp. Atomics assume a single hart: `aq`/`rl` have no effect and a trap clears the LR reservation.
+Build firmware with `-march=rv32imac_zicsr_zifencei -mabi=ilp32` (or any subset, e.g. `rv32imc_zicsr`). Misaligned loads and stores are performed in hardware rather than trapped.
 
 ---
 
@@ -75,7 +75,7 @@ Exit status is the firmware's (0–255), or 123 (idle in `wfi` forever),
 
 ```text
         +------------------------------------+
-        |        CPU Core (RV32IMC)          |
+        |        CPU Core (RV32IMAC)         |
         |  - 32x Regs (x0 hardwired to zero) |<--- [ Coprocessor Slot ]
         |  - Program Counter (PC)            |     (Custom opcodes 0x0B, 0x2B)
         +-----------------+------------------+
@@ -192,6 +192,23 @@ emu.map_device(0x2000_0000, mrve32.Ram(4096))  # native device
 print(emu.devices)   # [(base, size, name), ...]
 ```
 
+Prototype custom instructions (custom-0 `0x0B` / custom-1 `0x2B`) with a Python
+coprocessor; register writes are committed only if `execute` succeeds:
+
+```python
+class Mac:
+    def execute(self, call):              # call: mrve32.CoprocessorCall
+        if call.funct3 != 0:
+            return False                  # illegal instruction trap
+        acc = call.read_reg(call.rd) + call.read_reg(call.rs1) * call.read_reg(call.rs2)
+        call.write_reg(call.rd, acc & 0xFFFF_FFFF)
+        # call.read_u32(addr) / call.write_u32(addr, v): bus access
+        # (an uncaught BusError becomes a load/store access fault);
+        # call.next_pc = target: branch
+
+emu.set_coprocessor(Mac())                # None detaches it
+```
+
 For example, with the SNN module (`pip install ./modules/snn`):
 
 ```python
@@ -243,11 +260,29 @@ pinned `riscv-tests` revision (requires a RISC-V GCC cross toolchain):
 scripts/build-riscv-tests.sh
 ```
 
+Robustness: `tests/decoder_fuzz.rs` runs every 16-bit encoding, every
+opcode/funct3/funct7 combination and a million random words through the
+decoders and the disassembler, and random programs through the CPU.
+Coverage-guided targets for `cargo-fuzz` are in [`fuzz/`](fuzz/README.md)
+(CI runs them weekly). The disassembler was cross-checked against GNU objdump
+2.46: the only differences are encodings the spec reserves on RV32
+(`slli`/`srli`/`srai` with shamt[5] = 1, `c.addi16sp` with immediate 0),
+which objdump decodes and MRVE32 rejects, and the names of C HINT encodings.
+
+Interpreter throughput (MIPS) for a few instruction mixes:
+
+```bash
+cargo bench --bench mips
+```
+
 Run static analysis and linter checks:
 
 ```bash
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+The minimum supported Rust version (MSRV) is **1.88** (checked in CI).
+Changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
 ---
 ## License
 

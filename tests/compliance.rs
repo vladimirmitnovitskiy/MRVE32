@@ -13,7 +13,7 @@ use std::rc::Rc;
 const BASE: Reg = 0x8000_0000;
 const RAM_SIZE: usize = 1024 * 1024;
 const MAX_STEPS: usize = 100_000;
-const EXPECTED_TESTS: usize = 65; // 42 rv32ui + 8 rv32um + 14 rv32mi + 1 rv32uc
+const EXPECTED_TESTS: usize = 75; // 42 rv32ui + 8 rv32um + 10 rv32ua + 14 rv32mi + 1 rv32uc
 
 /// RAM that records the first non-zero word written to `tohost`.
 struct HtifRam {
@@ -102,17 +102,17 @@ fn test_official_riscv_tests() {
         "Expected {EXPECTED_TESTS} riscv-tests ELF files in tests/isa"
     );
 
-    // Every test runs on RV32IMC; the ones that do not use C also run on
-    // RV32IM, which exercises IALIGN = 32 (e.g. in rv32mi-p-ma_fetch).
+    // Every test runs on RV32IMAC; the ones that do not use C also run on
+    // RV32IMA, which exercises IALIGN = 32 (e.g. in rv32mi-p-ma_fetch).
     let mut runs = 0;
     let mut failures = Vec::new();
     for path in &entries {
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
         let elf = fs::read(path).expect("read ELF");
         let isas: &[(&str, bool)] = if name.starts_with("rv32uc-") {
-            &[("rv32imc", true)]
+            &[("rv32imac", true)]
         } else {
-            &[("rv32imc", true), ("rv32im", false)]
+            &[("rv32imac", true), ("rv32ima", false)]
         };
         for &(isa, compressed) in isas {
             runs += 1;

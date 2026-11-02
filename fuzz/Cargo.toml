@@ -1,0 +1,29 @@
+[package]
+name = "mrve32-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mrve32 = { path = ".." }
+
+# Not part of the main workspace (needs nightly and libFuzzer).
+[workspace]
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cpu"
+path = "fuzz_targets/cpu.rs"
+test = false
+doc = false
+bench = false

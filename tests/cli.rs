@@ -85,10 +85,10 @@ fn test_trace_and_stats() {
 }
 
 #[test]
-fn test_rv32im_rejects_compressed_firmware() {
-    // The firmware is built for rv32imc; without C its first 16-bit
+fn test_rv32ima_rejects_compressed_firmware() {
+    // The firmware is built for rv32imac; without C its first 16-bit
     // instruction is part of an illegal 32-bit word.
-    let out = run(&["--isa", "rv32im", FIRMWARE], None);
+    let out = run(&["--isa", "rv32ima", FIRMWARE], None);
     assert_eq!(out.status.code(), Some(126));
     assert!(
         stderr(&out).contains("illegal instruction"),

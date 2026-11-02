@@ -157,3 +157,15 @@ def test_load_elf_errors(tmp_path):
     small = Emulator(ram_size=1024)
     with pytest.raises(ElfError, match="cannot load"):
         small.load_elf(ISA / "rv32ui-p-add.elf")  # does not fit in 1 KiB
+
+
+def test_atomics():
+    emu = Emulator()
+    assert emu.read_csr(0x301) & 1, "misa.A"
+    data = emu.ram_base + 0x100
+    emu.write_u32(data, 40)
+    emu.write_reg(11, 2)
+    emu.write_reg(12, data)
+    emu.load_program(emu.ram_base, [0x00B6252F])  # amoadd.w a0, a1, (a2)
+    assert emu.step() is None
+    assert (emu.read_reg(10), emu.read_u32(data)) == (40, 42)

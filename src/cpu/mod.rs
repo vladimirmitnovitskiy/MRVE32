@@ -5,6 +5,7 @@ use crate::types::Reg;
 
 pub mod coprocessor;
 pub mod csr;
+mod csr_names;
 pub mod decode;
 pub mod decode_c;
 pub mod disasm;
@@ -23,6 +24,8 @@ pub struct Cpu {
     waiting: bool,
     /// Instruction word fetched by the last step, if any.
     last_fetch: Option<u32>,
+    /// LR/SC reservation: the word address reserved by the last `lr.w`.
+    reservation: Option<Reg>,
 }
 
 #[derive(Clone, Copy)]
@@ -53,11 +56,12 @@ impl Cpu {
             coprocessor: None,
             waiting: false,
             last_fetch: None,
+            reservation: None,
         }
     }
 
     /// Enables or disables the C extension (enabled by default), e.g. to
-    /// model an RV32IM core: `misa.C`, instruction alignment (IALIGN 16/32)
+    /// model a core without C: `misa.C`, instruction alignment (IALIGN 16/32)
     /// and decoding of 16-bit instructions follow it.
     pub fn set_compressed(&mut self, enabled: bool) {
         self.csrs.compressed = enabled;
@@ -87,6 +91,11 @@ impl Cpu {
         if reg != 0 {
             self.regs[reg] = val;
         }
+    }
+
+    /// Removes the attached coprocessor, if any.
+    pub fn detach_coprocessor(&mut self) -> Option<Box<dyn Coprocessor>> {
+        self.coprocessor.take()
     }
 
     pub fn attach_coprocessor(&mut self, coprocessor: Box<dyn Coprocessor>) {
@@ -187,6 +196,8 @@ impl Cpu {
     }
 
     fn take_trap(&mut self, trap: Trap) {
+        // A trap ends the LR/SC sequence (SC may fail spuriously).
+        self.reservation = None;
         let csrs = &mut self.csrs;
         csrs.mepc = trap.epc & !1;
         csrs.mcause = trap.cause.mcause();
@@ -503,6 +514,45 @@ impl Cpu {
             }
 
             // Stores
+            // RV32A. Atomic accesses cannot be split: a misaligned address
+            // raises address-misaligned. AMOs and SC report store/AMO faults.
+            Instruction::LrW { rd, rs1, .. } => {
+                let addr = self.read_reg(rs1);
+                if addr & 0b11 != 0 {
+                    return Err(Exception::LoadAddressMisaligned(addr));
+                }
+                let val = bus
+                    .read_u32(addr)
+                    .map_err(|_| Exception::LoadAccessFault(addr))?;
+                self.reservation = Some(addr);
+                self.write_reg(rd, val);
+            }
+            Instruction::ScW { rd, rs1, rs2, .. } => {
+                let addr = self.read_reg(rs1);
+                if addr & 0b11 != 0 {
+                    return Err(Exception::StoreAddressMisaligned(addr));
+                }
+                let success = self.reservation == Some(addr);
+                if success {
+                    bus.write_u32(addr, self.read_reg(rs2))
+                        .map_err(|_| Exception::StoreAccessFault(addr))?;
+                }
+                self.reservation = None;
+                self.write_reg(rd, if success { 0 } else { 1 });
+            }
+            Instruction::Amo {
+                op, rd, rs1, rs2, ..
+            } => {
+                let addr = self.read_reg(rs1);
+                if addr & 0b11 != 0 {
+                    return Err(Exception::StoreAddressMisaligned(addr));
+                }
+                let fault = |_| Exception::StoreAccessFault(addr);
+                let old = bus.read_u32(addr).map_err(fault)?;
+                bus.write_u32(addr, op.apply(old, self.read_reg(rs2)))
+                    .map_err(fault)?;
+                self.write_reg(rd, old);
+            }
             Instruction::Sw { rs1, rs2, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
                 bus.write_u32(addr, self.read_reg(rs2))
@@ -537,7 +587,7 @@ impl Cpu {
             }
             // Single hart, no caches: memory ordering and instruction-fetch
             // coherence are trivially satisfied.
-            Instruction::Fence | Instruction::FenceI => {}
+            Instruction::Fence { .. } | Instruction::FenceI => {}
             // WFI retires and stalls the hart until an enabled interrupt is
             // pending (regardless of mstatus.MIE). If one is already pending,
             // it completes immediately.
@@ -1058,6 +1108,93 @@ mod tests {
         assert_eq!(cpu.csrs.mtval, 0x1002);
         // При IALIGN=32 mepc[1] читается как ноль.
         assert_eq!(cpu.read_csr(csr::MEPC), Ok(0x1000));
+    }
+
+    #[test]
+    fn test_amo_returns_old_value_and_writes_result() {
+        // amoadd.w a0, a1, (a2); amomin.w a3, a1, (a2); amoswap.w zero, a1, (a2)
+        let (mut cpu, mut bus) = setup_env(&[0x00B6_252F, 0x80B6_26AF, 0x08B6_202F]);
+        bus.write_u32(0x1800, 10).unwrap();
+        cpu.write_reg(11, (-3i32) as u32);
+        cpu.write_reg(12, 0x1800);
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!((cpu.read_reg(10), bus.read_u32(0x1800)), (10, Ok(7)));
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(
+            (cpu.read_reg(13), bus.read_u32(0x1800)),
+            (7, Ok(-3i32 as u32))
+        );
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.read_reg(0), 0);
+    }
+
+    #[test]
+    fn test_lr_sc() {
+        // lr.w a0, (a1); sc.w a2, a3, (a1); sc.w a4, a3, (a1)
+        let (mut cpu, mut bus) = setup_env(&[0x1005_A52F, 0x18D5_A62F, 0x18D5_A72F]);
+        bus.write_u32(0x1800, 5).unwrap();
+        cpu.write_reg(11, 0x1800);
+        cpu.write_reg(13, 99);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(10), 5);
+        cpu.step(&mut bus);
+        assert_eq!(
+            (cpu.read_reg(12), bus.read_u32(0x1800)),
+            (0, Ok(99)),
+            "SC succeeds"
+        );
+        cpu.write_reg(13, 1);
+        cpu.step(&mut bus);
+        assert_eq!(
+            (cpu.read_reg(14), bus.read_u32(0x1800)),
+            (1, Ok(99)),
+            "reservation used up"
+        );
+    }
+
+    #[test]
+    fn test_sc_fails_after_trap_and_on_other_address() {
+        // lr.w a0, (a1); ecall; ... handler at TRAP_VECTOR is outside RAM
+        let (mut cpu, mut bus) = setup_env(&[0x1005_A52F, 0x0000_0073, 0x18D5_A62F]);
+        cpu.write_reg(11, 0x1800);
+        cpu.step(&mut bus);
+        cpu.step(&mut bus); // ecall: trap clears the reservation
+        cpu.pc = 0x1008;
+        cpu.step(&mut bus);
+        assert_eq!(cpu.read_reg(12), 1);
+
+        // lr.w a0, (a1); sc.w a2, a3, (a4) with a4 != a1
+        let (mut cpu, mut bus) = setup_env(&[0x1005_A52F, 0x18D7_262F]);
+        cpu.write_reg(11, 0x1800);
+        cpu.write_reg(14, 0x1804);
+        cpu.step(&mut bus);
+        cpu.step(&mut bus);
+        assert_eq!((cpu.read_reg(12), bus.read_u32(0x1804)), (1, Ok(0)));
+    }
+
+    #[test]
+    fn test_atomics_trap_on_misaligned_and_faulting_addresses() {
+        let (mut cpu, mut bus) = setup_env(&[0x1005_A52F]); // lr.w a0, (a1)
+        cpu.write_reg(11, 0x1802);
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::LoadAddressMisaligned(0x1802), 0x1000);
+
+        let (mut cpu, mut bus) = setup_env(&[0x00B6_252F]); // amoadd.w a0, a1, (a2)
+        cpu.write_reg(12, 0x1802);
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::StoreAddressMisaligned(0x1802),
+            0x1000,
+        );
+
+        let (mut cpu, mut bus) = setup_env(&[0x00B6_252F]);
+        cpu.write_reg(10, 0xAA);
+        cpu.write_reg(12, 0x9000_0000); // unmapped
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::StoreAccessFault(0x9000_0000), 0x1000);
+        assert_eq!(cpu.read_reg(10), 0xAA, "rd untouched on a fault");
     }
 
     #[test]

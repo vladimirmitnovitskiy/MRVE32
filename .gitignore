@@ -4,3 +4,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage

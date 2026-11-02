@@ -8,20 +8,34 @@ description = "SNN layer accelerator device module for the MRVE32 RISC-V emulato
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
+keywords = ["risc-v", "snn", "spiking-neural-network", "neuromorphic", "emulator"]
 dynamic = ["version"]
 # The device is passed to mrve32 through the device C ABI (version 2).
 dependencies = ["mrve32>=0.1,<0.2", "numpy>=1.24"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: System :: Emulators",
+    "Topic :: System :: Hardware",
+    "Typing :: Typed",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
 
+[project.urls]
+Repository = "https://github.com/vladimirmitnovitskiy/MRVE32"
+Issues = "https://github.com/vladimirmitnovitskiy/MRVE32/issues"
+Changelog = "https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/CHANGELOG.md"
+
 [tool.maturin]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
 features = ["python"]
 python-source = "python"
 module-name = "mrve32_snn._native"

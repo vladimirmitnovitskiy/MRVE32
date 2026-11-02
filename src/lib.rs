@@ -10,7 +10,7 @@ pub use bus::{Bus, BusDevice, BusError};
 pub use cpu::coprocessor::Coprocessor;
 pub use cpu::csr::CsrError;
 pub use cpu::disasm::{disassemble, is_compressed};
-pub use cpu::instructions::Instruction;
+pub use cpu::instructions::{AmoOp, Instruction};
 pub use cpu::{Cpu, Exception, Interrupt, Trap, TrapCause};
 pub use devices::clint::Clint;
 pub use devices::finisher::TestFinisher;

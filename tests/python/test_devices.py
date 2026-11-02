@@ -227,7 +227,7 @@ def test_tracer_and_disassemble():
     assert mrve32.disassemble(word, pc) == "auipc sp, 0x100"
     assert trap is None
     assert mrve32.disassemble(0x0080006F) == "j 8"
-    assert mrve32.disassemble(0xFFFF_FFFF) == ".word 0xffffffff"
+    assert mrve32.disassemble(0xFFFF_FFFF) == ".insn 4, 0xffffffff"
 
     emu.set_tracer(None)
     emu.run(3)

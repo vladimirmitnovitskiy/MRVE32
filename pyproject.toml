@@ -4,15 +4,23 @@ build-backend = "maturin"
 
 [project]
 name = "mrve32"
-description = "Deterministic RV32IMC microcontroller emulator with pluggable memory-mapped devices"
+description = "Deterministic RV32IMAC microcontroller emulator with pluggable memory-mapped devices"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
+keywords = ["risc-v", "riscv", "emulator", "microcontroller", "testbench"]
 dynamic = ["version"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: System :: Emulators",
+    "Topic :: System :: Hardware",
+    "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
@@ -20,8 +28,11 @@ test = ["pytest>=7"]
 
 [project.urls]
 Repository = "https://github.com/vladimirmitnovitskiy/MRVE32"
+Issues = "https://github.com/vladimirmitnovitskiy/MRVE32/issues"
+Changelog = "https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/CHANGELOG.md"
 
 [tool.maturin]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
 features = ["python"]
 bindings = "pyo3"
 python-source = "python"

@@ -1,4 +1,4 @@
-"""MRVE32: deterministic RV32IMC microcontroller emulator.
+"""MRVE32: deterministic RV32IMAC microcontroller emulator.
 
 The core (CPU, bus, RAM, CLINT, ELF loader) is implemented in Rust
 (``mrve32._native``). Peripherals are pluggable: ``Emulator.map_device``
@@ -13,6 +13,7 @@ from ._native import (
     DEVICE_ABI_VERSION,
     BusError,
     Clint,
+    CoprocessorCall,
     ElfError,
     Emulator,
     Ram,
@@ -38,10 +39,24 @@ class Device(Protocol):
     def write(self, offset: int, width: int, value: int) -> None: ...
 
 
+@runtime_checkable
+class Coprocessor(Protocol):
+    """Interface of a coprocessor for custom-0/custom-1 instructions
+    (see ``Emulator.set_coprocessor``).
+
+    Return ``False`` from ``execute`` for an illegal instruction; ``None``
+    or ``True`` means it executed.
+    """
+
+    def execute(self, call: CoprocessorCall) -> bool | None: ...
+
+
 __all__ = [
     "DEVICE_ABI_VERSION",
     "BusError",
     "Clint",
+    "Coprocessor",
+    "CoprocessorCall",
     "Device",
     "ElfError",
     "Emulator",

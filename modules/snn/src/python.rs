@@ -12,7 +12,7 @@ use crate::{SNN_WINDOW_SIZE, SnnAccelerator, SnnConfig, TimingModel};
 
 /// SNN layer accelerator (spec v0); attach with
 /// `emu.map_device(base, SnnAccelerator(...))`.
-#[pyclass(name = "SnnAccelerator", unsendable)]
+#[pyclass(name = "SnnAccelerator", module = "mrve32_snn", unsendable)]
 pub struct PySnnAccelerator {
     device: Option<SnnAccelerator>,
     config: SnnConfig,

@@ -1,0 +1,136 @@
+name: Release
+
+# Builds wheels and sdists for `mrve32` and `mrve32-snn`; on a `v*` tag also
+# publishes them to PyPI with Trusted Publishing (no API token: configure
+# both projects on pypi.org -> Publishing -> GitHub, workflow `release.yml`,
+# environment `pypi`). Run manually to build without publishing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Tag matches crate versions
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          for manifest in Cargo.toml modules/snn/Cargo.toml; do
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
+            if [ "$version" != "$tag" ]; then
+              echo "::error::$manifest has version $version, tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+          grep -q "^## \[$tag\]" CHANGELOG.md || { echo "::error::no CHANGELOG.md entry for $tag"; exit 1; }
+
+  wheels:
+    name: Wheel ${{ matrix.package.name }} (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - { name: mrve32, dir: . }
+          - { name: mrve32-snn, dir: modules/snn }
+        platform:
+          - { name: linux-x86_64, runner: ubuntu-latest, target: x86_64 }
+          - { name: linux-aarch64, runner: ubuntu-latest, target: aarch64 }
+          - { name: macos-x86_64, runner: macos-13, target: x86_64 }
+          - { name: macos-arm64, runner: macos-14, target: aarch64 }
+          - { name: windows-x64, runner: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      # abi3: one wheel per platform covers CPython >= 3.10.
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: ${{ matrix.package.dir }}
+          target: ${{ matrix.platform.target }}
+          manylinux: auto
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.package.name }}-${{ matrix.platform.name }}
+          path: ${{ matrix.package.dir }}/dist/*.whl
+
+  sdist:
+    name: Sdist ${{ matrix.package.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - { name: mrve32, dir: . }
+          - { name: mrve32-snn, dir: modules/snn }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: ${{ matrix.package.dir }}
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist-${{ matrix.package.name }}
+          path: ${{ matrix.package.dir }}/dist/*.tar.gz
+
+  test-wheels:
+    name: Test wheels (${{ matrix.os }})
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Install from the built wheels only
+        shell: bash
+        run: |
+          pip install numpy pytest
+          pip install --no-index --find-links dist mrve32 mrve32-snn
+      # Run from a temp dir so the tests import the installed packages.
+      - name: Run tests
+        shell: bash
+        run: |
+          cp -r tests modules/snn/tests/python "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          python -m pytest -q -p no:cacheprovider tests/python python
+
+  publish:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check-version, wheels, sdist, test-wheels]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mrve32
+    permissions:
+      id-token: write # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

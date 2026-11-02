@@ -1,4 +1,7 @@
-use crate::cpu::{Exception, instructions::Instruction};
+use crate::cpu::{
+    Exception,
+    instructions::{AmoOp, Instruction},
+};
 
 pub fn decode(raw: u32) -> Result<Instruction, Exception> {
     let opcode = (raw & 0x7F) as u8;
@@ -82,6 +85,40 @@ pub fn decode(raw: u32) -> Result<Instruction, Exception> {
             _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x0B | 0x2B => Ok(Instruction::Custom { opcode, raw }),
+        0x2F if funct3 == 0x2 => {
+            let aq = raw & (1 << 26) != 0;
+            let rl = raw & (1 << 25) != 0;
+            let op = match raw >> 27 {
+                0b00010 if rs2 == 0 => return Ok(Instruction::LrW { rd, rs1, aq, rl }),
+                0b00011 => {
+                    return Ok(Instruction::ScW {
+                        rd,
+                        rs1,
+                        rs2,
+                        aq,
+                        rl,
+                    });
+                }
+                0b00001 => AmoOp::Swap,
+                0b00000 => AmoOp::Add,
+                0b00100 => AmoOp::Xor,
+                0b01100 => AmoOp::And,
+                0b01000 => AmoOp::Or,
+                0b10000 => AmoOp::Min,
+                0b10100 => AmoOp::Max,
+                0b11000 => AmoOp::Minu,
+                0b11100 => AmoOp::Maxu,
+                _ => return Err(Exception::IllegalInstruction(raw)),
+            };
+            Ok(Instruction::Amo {
+                op,
+                rd,
+                rs1,
+                rs2,
+                aq,
+                rl,
+            })
+        }
         0x23 => match funct3 {
             0x0 => Ok(Instruction::Sb {
                 rs1,
@@ -158,7 +195,11 @@ pub fn decode(raw: u32) -> Result<Instruction, Exception> {
             }
         }
         0x0F => match funct3 {
-            0x0 => Ok(Instruction::Fence),
+            0x0 => Ok(Instruction::Fence {
+                fm: (raw >> 28) as u8,
+                pred: ((raw >> 24) & 0xF) as u8,
+                succ: ((raw >> 20) & 0xF) as u8,
+            }),
             0x1 => Ok(Instruction::FenceI),
             _ => Err(Exception::IllegalInstruction(raw)),
         },
@@ -169,6 +210,34 @@ pub fn decode(raw: u32) -> Result<Instruction, Exception> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decode_atomics() {
+        assert_eq!(
+            decode(0x1005_A52F),
+            Ok(Instruction::LrW {
+                rd: 10,
+                rs1: 11,
+                aq: false,
+                rl: false
+            })
+        );
+        assert_eq!(
+            decode(0x06B6_252F),
+            Ok(Instruction::Amo {
+                op: AmoOp::Add,
+                rd: 10,
+                rs1: 12,
+                rs2: 11,
+                aq: true,
+                rl: true
+            })
+        );
+        // lr.w with rs2 != 0, funct3 != 2 (.d is RV64) and unknown funct5
+        for raw in [0x1015_A52F, 0x1005_B52F, 0x2805_A52F] {
+            assert_eq!(decode(raw), Err(Exception::IllegalInstruction(raw)));
+        }
+    }
 
     // --- Вспомогательные функции кодирования инструкций ---
 
@@ -792,7 +861,9 @@ mod tests {
     fn test_decode_mret_wfi_and_fences() {
         assert_eq!(decode(0x3020_0073), Ok(Instruction::Mret));
         assert_eq!(decode(0x1050_0073), Ok(Instruction::Wfi));
-        assert_eq!(decode(0x0FF0_000F), Ok(Instruction::Fence)); // fence iorw, iorw
+        let fence = |fm, pred, succ| Ok(Instruction::Fence { fm, pred, succ });
+        assert_eq!(decode(0x0FF0_000F), fence(0, 0xF, 0xF)); // fence iorw, iorw
+        assert_eq!(decode(0x8330_000F), fence(8, 3, 3)); // fence.tso
         assert_eq!(decode(0x0000_100F), Ok(Instruction::FenceI));
 
         // MISC-MEM with funct3 other than FENCE/FENCE.I is illegal

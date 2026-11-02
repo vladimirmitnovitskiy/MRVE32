@@ -1,4 +1,4 @@
-//! `mrve32`: runs a bare-metal RV32IM ELF on a QEMU-virt-like machine.
+//! `mrve32`: runs a bare-metal RV32IMAC ELF on a QEMU-virt-like machine.
 
 use std::cell::Cell;
 use std::io::{self, Write};
@@ -15,15 +15,15 @@ use mrve32::{
 const USAGE: &str = "\
 Usage: mrve32 [OPTIONS] <FIRMWARE.elf>
 
-Runs bare-metal RV32IMC firmware on a QEMU-virt-like memory map:
+Runs bare-metal RV32IMAC firmware on a QEMU-virt-like memory map:
   RAM       0x80000000  (--ram-size, default 128M)
   UART      0x10000000  NS16550A; transmitted bytes go to stdout
   finisher  0x00100000  sifive,test0; firmware writes its exit status here
   CLINT     0x02000000  mtime/mtimecmp/msip
 
 Options:
-  --isa rv32imc|rv32im   instruction set; rv32im traps on 2-byte-aligned
-                         jump targets [default: rv32imc]
+  --isa rv32imac|rv32ima instruction set; rv32ima (no C) traps on
+                         2-byte-aligned jump targets [default: rv32imac]
   --ram-base ADDR        RAM base address [default: 0x80000000]
   --ram-size SIZE        RAM size, optional K/M suffix [default: 128M]
   --uart ADDR|none       UART base address [default: 0x10000000]
@@ -136,9 +136,13 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Parsed, String> 
             "--isa" => {
                 let v = value(&arg)?;
                 opts.compressed = match v.to_ascii_lowercase().as_str() {
-                    "rv32imc" => true,
-                    "rv32im" => false,
-                    _ => return Err(format!("--isa: unsupported ISA '{v}' (rv32imc or rv32im)")),
+                    "rv32imac" => true,
+                    "rv32ima" => false,
+                    _ => {
+                        return Err(format!(
+                            "--isa: unsupported ISA '{v}' (rv32imac or rv32ima)"
+                        ));
+                    }
                 };
             }
             "--ram-base" => opts.ram_base = parse_addr(&arg, &value(&arg)?)?,

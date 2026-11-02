@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from os import PathLike
-from typing import Final, Literal
+from typing import Final, Literal, Protocol
 
 __version__: Final[str]
 
@@ -94,6 +94,49 @@ def disassemble(word: int, pc: int | None = None) -> str:
     ``word`` is a 32-bit instruction, or a 16-bit (C) one in the low half
     when its low two bits are not ``0b11``."""
 
+class CoprocessorCall:
+    """One custom instruction handed to a coprocessor's ``execute``.
+
+    Valid only during that call; afterwards every method raises
+    ``RuntimeError``. Register and ``next_pc`` changes are committed only if
+    ``execute`` succeeds.
+    """
+
+    @property
+    def opcode(self) -> int:
+        """``0x0B`` (custom-0) or ``0x2B`` (custom-1)."""
+    @property
+    def word(self) -> int:
+        """The 32-bit instruction word."""
+    @property
+    def pc(self) -> int: ...
+    @property
+    def rd(self) -> int: ...
+    @property
+    def rs1(self) -> int: ...
+    @property
+    def rs2(self) -> int: ...
+    @property
+    def funct3(self) -> int: ...
+    @property
+    def funct7(self) -> int: ...
+    next_pc: int
+    """The pc after the instruction (``pc + 4`` by default); set it to branch."""
+    def read_reg(self, reg: int) -> int: ...
+    def write_reg(self, reg: int, value: int) -> None:
+        """Writes to x0 are discarded."""
+    # Bus access; failures raise BusError (an access fault if uncaught).
+    def read_u8(self, addr: int) -> int: ...
+    def read_u16(self, addr: int) -> int: ...
+    def read_u32(self, addr: int) -> int: ...
+    def write_u8(self, addr: int, value: int) -> None: ...
+    def write_u16(self, addr: int, value: int) -> None: ...
+    def write_u32(self, addr: int, value: int) -> None: ...
+
+class _Coprocessor(Protocol):
+    def execute(self, call: CoprocessorCall) -> bool | None:
+        """Executes ``call``; return ``False`` for an illegal instruction."""
+
 class Emulator:
     """A RISC-V MCU: CPU and bus with RAM and an optional CLINT.
 
@@ -114,7 +157,7 @@ class Emulator:
     @property
     def clint_base(self) -> int | None: ...
     compressed: bool
-    """C extension enabled (RV32IMC); ``False`` models an RV32IM core."""
+    """C extension enabled (RV32IMAC); ``False`` models an RV32IMA core."""
 
     # Devices
     def map_device(self, base: int, device: object, *, size: int | None = None) -> None:
@@ -127,6 +170,14 @@ class Emulator:
         """
     def set_tracer(self, tracer: Callable[[int, int | None, Trap | None], object] | None) -> None:
         """Calls ``tracer(pc, word, trap)`` after every step; ``None`` removes it."""
+    def set_coprocessor(self, coprocessor: _Coprocessor | None) -> None:
+        """Handles custom-0/custom-1 instructions (opcodes 0x0B, 0x2B) with
+        ``coprocessor.execute(call)``; ``None`` detaches it.
+
+        Returning ``False`` raises an illegal-instruction trap. An uncaught
+        ``BusError`` from a ``call`` access becomes a load/store access
+        fault; any other exception stops :meth:`run` and is re-raised.
+        """
     @property
     def devices(self) -> list[tuple[int, int, str]]:
         """Mapped devices as ``(base, size, type name)``, sorted by address."""

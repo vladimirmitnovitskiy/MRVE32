@@ -15,7 +15,10 @@ use crate::devices::finisher::{FINISHER_SIZE, TestFinisher};
 use crate::devices::uart::{Uart, UartIo};
 use crate::plugin::RawDevice;
 use crate::plugin::python::{into_capsule, take_from_capsule};
-use crate::{Bus, BusDevice, Cpu, ElfImage, Machine, Ram, Reg, StopReason, Trap, TrapCause};
+use crate::{
+    Bus, BusDevice, Coprocessor, Cpu, ElfImage, Exception, Machine, Ram, Reg, StopReason, Trap,
+    TrapCause,
+};
 
 create_exception!(
     mrve32,
@@ -36,7 +39,7 @@ fn bus_err(e: crate::BusError) -> PyErr {
 
 /// A trap taken by the CPU (exception or interrupt); already handled, `pc`
 /// points to the trap vector.
-#[pyclass(name = "Trap", frozen, get_all, from_py_object)]
+#[pyclass(name = "Trap", module = "mrve32", frozen, get_all, from_py_object)]
 #[derive(Clone)]
 pub struct PyTrap {
     /// `mcause` value (bit 31 set for interrupts).
@@ -76,7 +79,7 @@ impl PyTrap {
 }
 
 /// Result of `Emulator.run`.
-#[pyclass(name = "RunResult", frozen, get_all)]
+#[pyclass(name = "RunResult", module = "mrve32", frozen, get_all)]
 pub struct PyRunResult {
     /// Steps (clock cycles) executed by the call.
     steps: u64,
@@ -106,7 +109,7 @@ impl PyRunResult {
 // --- Devices -----------------------------------------------------------------
 
 /// Main memory, attachable with `Emulator.map_device`.
-#[pyclass(name = "Ram", unsendable)]
+#[pyclass(name = "Ram", module = "mrve32", unsendable)]
 pub struct PyRam {
     device: Option<Ram>,
     size: Reg,
@@ -135,7 +138,7 @@ impl PyRam {
 }
 
 /// Core-local interruptor (`msip`, `mtime`, `mtimecmp`; SiFive memory map).
-#[pyclass(name = "Clint", unsendable)]
+#[pyclass(name = "Clint", module = "mrve32", unsendable)]
 pub struct PyClint {
     device: Option<Clint>,
 }
@@ -170,7 +173,7 @@ impl PyClint {
 /// Transmitted bytes are collected (`output()`, `take_output()`) or, with
 /// `echo=True`, written line by line to `sys.stdout`. `write_input()` feeds
 /// bytes the firmware receives. Usable after it has been attached.
-#[pyclass(name = "Uart", unsendable)]
+#[pyclass(name = "Uart", module = "mrve32", unsendable)]
 pub struct PyUart {
     device: Option<Uart>,
     io: UartIo,
@@ -248,7 +251,7 @@ impl PyUart {
 /// Test finisher (`sifive,test0`): firmware writes `0x5555` (pass) or
 /// `(code << 16) | 0x3333` (fail) and `Emulator.run` returns
 /// `reason == "exit"` with `exit_code`.
-#[pyclass(name = "TestFinisher", unsendable)]
+#[pyclass(name = "TestFinisher", module = "mrve32", unsendable)]
 pub struct PyTestFinisher {
     device: Option<TestFinisher>,
 }
@@ -411,6 +414,224 @@ impl BusDevice for PyDevice {
     }
 }
 
+// --- Coprocessors -------------------------------------------------------------
+
+/// One custom instruction handed to a Python coprocessor (see
+/// `Emulator.set_coprocessor`). Valid only during the `execute` call.
+#[pyclass(name = "CoprocessorCall", module = "mrve32", unsendable)]
+pub struct PyCoprocessorCall {
+    opcode: u8,
+    word: u32,
+    pc: Reg,
+    regs: *mut [Reg; 32],
+    next_pc: *mut Reg,
+    bus: *mut (dyn BusDevice + 'static),
+    live: bool,
+    /// The access fault of the last failed bus access, for a BusError that
+    /// escapes `execute`.
+    fault: Option<Exception>,
+}
+
+impl PyCoprocessorCall {
+    fn check(&self) -> PyResult<()> {
+        if self.live {
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err(
+                "the coprocessor call is over; CoprocessorCall is only valid inside execute()",
+            ))
+        }
+    }
+
+    fn bus(&mut self) -> PyResult<&mut dyn BusDevice> {
+        self.check()?;
+        // SAFETY: live means we are inside Coprocessor::execute, which holds
+        // the exclusive borrow these pointers were made from.
+        Ok(unsafe { &mut *self.bus })
+    }
+
+    fn load<T>(&mut self, addr: Reg, res: Result<T, crate::BusError>) -> PyResult<T> {
+        res.map_err(|e| {
+            self.fault = Some(Exception::LoadAccessFault(addr));
+            bus_err(e)
+        })
+    }
+
+    fn store(&mut self, addr: Reg, res: Result<(), crate::BusError>) -> PyResult<()> {
+        res.map_err(|e| {
+            self.fault = Some(Exception::StoreAccessFault(addr));
+            bus_err(e)
+        })
+    }
+}
+
+#[pymethods]
+impl PyCoprocessorCall {
+    /// 0x0B (custom-0) or 0x2B (custom-1).
+    #[getter]
+    fn opcode(&self) -> u8 {
+        self.opcode
+    }
+    /// The 32-bit instruction word.
+    #[getter]
+    fn word(&self) -> u32 {
+        self.word
+    }
+    /// Address of the instruction.
+    #[getter]
+    fn pc(&self) -> Reg {
+        self.pc
+    }
+    /// R-type fields of `word`.
+    #[getter]
+    fn rd(&self) -> usize {
+        ((self.word >> 7) & 0x1F) as usize
+    }
+    #[getter]
+    fn funct3(&self) -> u32 {
+        (self.word >> 12) & 0x7
+    }
+    #[getter]
+    fn rs1(&self) -> usize {
+        ((self.word >> 15) & 0x1F) as usize
+    }
+    #[getter]
+    fn rs2(&self) -> usize {
+        ((self.word >> 20) & 0x1F) as usize
+    }
+    #[getter]
+    fn funct7(&self) -> u32 {
+        self.word >> 25
+    }
+
+    fn read_reg(&self, reg: usize) -> PyResult<Reg> {
+        self.check()?;
+        check_reg(reg)?;
+        // SAFETY: see `bus`.
+        Ok(unsafe { (*self.regs)[reg] })
+    }
+
+    /// Writes are committed only if `execute` succeeds; x0 stays zero.
+    fn write_reg(&mut self, reg: usize, val: Reg) -> PyResult<()> {
+        self.check()?;
+        check_reg(reg)?;
+        // SAFETY: see `bus`.
+        unsafe { (*self.regs)[reg] = val };
+        Ok(())
+    }
+
+    /// The pc after the instruction (default `pc + 4`); set it to branch.
+    #[getter]
+    fn get_next_pc(&self) -> PyResult<Reg> {
+        self.check()?;
+        // SAFETY: see `bus`.
+        Ok(unsafe { *self.next_pc })
+    }
+
+    #[setter]
+    fn set_next_pc(&mut self, pc: Reg) -> PyResult<()> {
+        self.check()?;
+        // SAFETY: see `bus`.
+        unsafe { *self.next_pc = pc };
+        Ok(())
+    }
+
+    fn read_u8(&mut self, addr: Reg) -> PyResult<u8> {
+        let res = self.bus()?.read_u8(addr);
+        self.load(addr, res)
+    }
+    fn read_u16(&mut self, addr: Reg) -> PyResult<u16> {
+        let res = self.bus()?.read_u16(addr);
+        self.load(addr, res)
+    }
+    fn read_u32(&mut self, addr: Reg) -> PyResult<u32> {
+        let res = self.bus()?.read_u32(addr);
+        self.load(addr, res)
+    }
+    fn write_u8(&mut self, addr: Reg, val: u8) -> PyResult<()> {
+        let res = self.bus()?.write_u8(addr, val);
+        self.store(addr, res)
+    }
+    fn write_u16(&mut self, addr: Reg, val: u16) -> PyResult<()> {
+        let res = self.bus()?.write_u16(addr, val);
+        self.store(addr, res)
+    }
+    fn write_u32(&mut self, addr: Reg, val: u32) -> PyResult<()> {
+        let res = self.bus()?.write_u32(addr, val);
+        self.store(addr, res)
+    }
+}
+
+/// A coprocessor implemented in Python: `obj.execute(call)`.
+struct PyCoprocessor {
+    obj: Py<PyAny>,
+    error: ErrorSlot,
+}
+
+impl Coprocessor for PyCoprocessor {
+    fn execute(
+        &mut self,
+        opcode: u8,
+        raw: u32,
+        regs: &mut [Reg; 32],
+        next_pc: &mut Reg,
+        bus: &mut dyn BusDevice,
+    ) -> Result<(), Exception> {
+        let illegal = Exception::IllegalInstruction(raw);
+        if self.error.borrow().is_some() {
+            return Err(illegal);
+        }
+        let bus: *mut (dyn BusDevice + '_) = bus;
+        // SAFETY: only erases the lifetime; the pointer is used only while
+        // `live`, which ends before this function returns.
+        let bus: *mut (dyn BusDevice + 'static) = unsafe { std::mem::transmute(bus) };
+        Python::attach(|py| {
+            let call = Py::new(
+                py,
+                PyCoprocessorCall {
+                    opcode,
+                    word: raw,
+                    pc: next_pc.wrapping_sub(4),
+                    regs,
+                    next_pc,
+                    bus,
+                    live: true,
+                    fault: None,
+                },
+            );
+            let call = match call {
+                Ok(call) => call,
+                Err(e) => {
+                    self.error.borrow_mut().get_or_insert(e);
+                    return Err(illegal);
+                }
+            };
+            let result = self.obj.call_method1(py, "execute", (call.clone_ref(py),));
+            let fault = {
+                let mut c = call.borrow_mut(py);
+                c.live = false;
+                c.fault.take()
+            };
+            match result {
+                Ok(v)
+                    if v.bind(py).is_instance_of::<pyo3::types::PyBool>()
+                        && !v.is_truthy(py).unwrap_or(true) =>
+                {
+                    Err(illegal)
+                }
+                Ok(_) => Ok(()),
+                Err(e) if e.is_instance_of::<BusError>(py) && fault.is_some() => {
+                    Err(fault.expect("checked"))
+                }
+                Err(e) => {
+                    self.error.borrow_mut().get_or_insert(e);
+                    Err(illegal)
+                }
+            }
+        })
+    }
+}
+
 /// One entry of `Emulator.devices`.
 #[derive(Clone)]
 struct MappedDevice {
@@ -423,7 +644,7 @@ struct MappedDevice {
 
 /// A RISC-V MCU: CPU and bus with RAM and an optional CLINT; further devices
 /// (native modules or Python objects) are attached with `map_device`.
-#[pyclass(unsendable)]
+#[pyclass(name = "Emulator", module = "mrve32", unsendable)]
 pub struct Emulator {
     machine: Machine,
     symbols: Option<ElfImage>,
@@ -517,7 +738,7 @@ impl Emulator {
         self.clint_base
     }
 
-    /// C extension enabled (RV32IMC); False models an RV32IM core.
+    /// C extension enabled (RV32IMAC); False models an RV32IMA core.
     #[getter]
     fn compressed(&self) -> bool {
         self.machine.cpu.compressed()
@@ -605,6 +826,25 @@ impl Emulator {
                 }
             });
         })));
+    }
+
+    /// Handles custom-0/custom-1 instructions (opcodes 0x0B, 0x2B) with
+    /// `coprocessor.execute(call: CoprocessorCall)`; None detaches it.
+    ///
+    /// Return False for an illegal instruction. Register writes are
+    /// committed only on success. An uncaught BusError from a `call`
+    /// access becomes a load/store access fault; any other exception stops
+    /// `run()` and is re-raised.
+    fn set_coprocessor(&mut self, coprocessor: Option<Py<PyAny>>) {
+        match coprocessor {
+            Some(obj) => self.machine.cpu.attach_coprocessor(Box::new(PyCoprocessor {
+                obj,
+                error: self.device_error.clone(),
+            })),
+            None => {
+                self.machine.cpu.detach_coprocessor();
+            }
+        }
     }
 
     /// Mapped devices as `(base, size, type name)`, sorted by address.
@@ -875,6 +1115,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(disassemble, m)?)?;
     m.add_class::<PyTrap>()?;
     m.add_class::<PyRunResult>()?;
+    m.add_class::<PyCoprocessorCall>()?;
     m.add("BusError", py.get_type::<BusError>())?;
     m.add("ElfError", py.get_type::<ElfError>())?;
     Ok(())
