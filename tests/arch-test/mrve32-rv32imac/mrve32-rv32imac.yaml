@@ -98,12 +98,9 @@ params:
 
   PMA_GRANULARITY: 2
 
+  # No PMP. The other PMP parameters exist only when NUM_PMP_ENTRIES > 0
+  # (UDB rejects them otherwise).
   NUM_PMP_ENTRIES: 0
-  NUM_USABLE_PMP_ENTRIES: 0
-  PMP_GRANULARITY: 2
-  PMP_NA4_SUPPORTED: false
-  PMP_NAPOT_SUPPORTED: false
-  PMP_TOR_SUPPORTED: false
 
   # mhpmcounter3..31 and mhpmevent3..31 are read-only zero.
   HPM_COUNTER_EN:
