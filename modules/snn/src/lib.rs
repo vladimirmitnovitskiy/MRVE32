@@ -1,18 +1,22 @@
-//! SNN layer accelerator, MMIO front-end (see `docs/snn-accelerator-v0.md`).
+//! SNN layer accelerator for the MRVE32 emulator: MMIO front-end (see
+//! `docs/snn-accelerator-v0.md`). A device module: it plugs into the
+//! emulator through [`mrve32::BusDevice`] like any third-party device.
 //!
 //! The device owns the registers, the local SRAM, the BUSY timer and the
 //! interrupt line. What a step computes is delegated to a [`SnnBackend`]
 //! (by default the golden [`ReferenceLif`] model).
 
 pub mod backend;
+#[cfg(feature = "python")]
+mod python;
 
 pub use backend::{LayerBuffers, LayerConfig, ReferenceLif, SnnBackend, StepStats, TimingModel};
 
-use crate::bus::{BusDevice, BusError};
-use crate::cpu::csr::MIP_MEIP;
-use crate::types::Reg;
+use mrve32::Reg;
+use mrve32::cpu::csr::MIP_MEIP;
+use mrve32::{BusDevice, BusError};
 
-/// Size of the device address window, for [`crate::Bus::map_device`].
+/// Size of the device address window, for [`mrve32::Bus::map_device`].
 pub const SNN_WINDOW_SIZE: Reg = 0x10_0000;
 
 /// `ID` register value: ASCII "SN", version 0.0.
@@ -662,3 +666,8 @@ mod tests {
         });
     }
 }
+
+// Compiles and runs the Rust examples in README.md as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;

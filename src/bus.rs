@@ -51,6 +51,34 @@ pub trait BusDevice {
     }
 }
 
+/// Boxed devices are devices too (e.g. `Box<dyn BusDevice>` from a registry).
+impl<T: BusDevice + ?Sized> BusDevice for Box<T> {
+    fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError> {
+        (**self).read_u8(addr)
+    }
+    fn read_u16(&mut self, addr: Reg) -> Result<u16, BusError> {
+        (**self).read_u16(addr)
+    }
+    fn read_u32(&mut self, addr: Reg) -> Result<u32, BusError> {
+        (**self).read_u32(addr)
+    }
+    fn write_u8(&mut self, addr: Reg, val: u8) -> Result<(), BusError> {
+        (**self).write_u8(addr, val)
+    }
+    fn write_u16(&mut self, addr: Reg, val: u16) -> Result<(), BusError> {
+        (**self).write_u16(addr, val)
+    }
+    fn write_u32(&mut self, addr: Reg, val: u32) -> Result<(), BusError> {
+        (**self).write_u32(addr, val)
+    }
+    fn tick(&mut self, cycles: u64) {
+        (**self).tick(cycles)
+    }
+    fn irq_lines(&self) -> Reg {
+        (**self).irq_lines()
+    }
+}
+
 impl Bus {
     pub fn new() -> Self {
         Self {

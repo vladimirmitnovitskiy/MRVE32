@@ -2,10 +2,11 @@
 //! sleeps in `wfi` until the completion interrupt (MEIP) and reads the
 //! output spikes.
 
-use mrve32::devices::snn::{
-    REG_LAYER_SIZE, REG_NEURON_CFG, SNN_WINDOW_SIZE, SPIKE_IN_BASE, VMEM_BASE, WEIGHTS_BASE,
+use mrve32::{Bus, BusDevice, Cpu, Ram, Reg};
+use mrve32_snn::{
+    REG_LAYER_SIZE, REG_NEURON_CFG, SNN_WINDOW_SIZE, SPIKE_IN_BASE, SnnAccelerator, SnnConfig,
+    VMEM_BASE, WEIGHTS_BASE,
 };
-use mrve32::{Bus, BusDevice, Cpu, Ram, Reg, SnnAccelerator, SnnConfig};
 
 const BASE: Reg = 0x8000_0000;
 const SNN_BASE: Reg = 0x1000_0000;

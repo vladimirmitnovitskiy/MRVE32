@@ -3,14 +3,20 @@ name = "mrve32"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+description = "RV32IM machine-mode RISC-V MCU emulator with pluggable memory-mapped devices"
+
+[workspace]
+members = ["modules/snn"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = {version ="0.30", features = ["extension-module"], optional = true}
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"], optional = true }
 
 [features]
 default = []
-python = ["dep:pyo3"]
-
+# Helpers for device modules that ship as Python packages (capsule export).
+python-device = ["dep:pyo3"]
+# The `mrve32` Python package itself.
+python = ["python-device"]

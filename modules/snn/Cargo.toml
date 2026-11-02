@@ -1,0 +1,18 @@
+[package]
+name = "mrve32-snn"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "SNN layer accelerator device module for the MRVE32 RISC-V emulator"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mrve32 = { path = "../..", version = "0.1.0" }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"], optional = true }
+
+[features]
+default = []
+# Python package `mrve32_snn` (a device for `mrve32.Emulator.map_device`).
+python = ["dep:pyo3", "mrve32/python-device"]
