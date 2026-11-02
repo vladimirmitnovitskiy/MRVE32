@@ -15,23 +15,9 @@ version in both `Cargo.toml` files, and push a `vX.Y.Z` tag (see
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] - 2026-11-03
 
-- `BusDevice::is_mapped` (default `true`): whether an address is backed,
-  without accessing it. `Bus` answers from its memory map.
-
-### Fixed
-
-- A failing `sc.w` (no matching reservation) to an inaccessible address
-  now raises a store/AMO access fault instead of writing 1 to `rd`, as the
-  spec and Sail require.
-- ACT4 configuration (`tests/arch-test/mrve32-rv32imac`): misaligned loads
-  and stores are performed in hardware (`MISALIGNED_LDST: true`, Sail
-  `load_store: None`), not trapped, matching the emulator.
-
-## [0.1.0] - 2026-11-02
-
-First public release (0.1.0).
+First public release.
 
 ### Added
 
@@ -39,14 +25,14 @@ First public release (0.1.0).
   (`mcause`/`mepc`/`mtval`), strict CSR access checks, WARL fields,
   IALIGN 16/32 (C can be disabled at runtime, `misa.C`).
 - RV32A: LR/SC with a single-hart reservation, all AMOs; misaligned atomics
-  raise address-misaligned exceptions.
+  raise address-misaligned exceptions. Failing `sc.w` to unmapped address faults.
 - RV32C (Zca) with variable-length fetch; fetch faults report the failing
   half.
 - Interrupts: machine timer/software/external, `WFI` with idle detection,
   `mcycle`/`minstret` and their unprivileged shadows, `mcountinhibit`.
 - Pluggable devices: the `BusDevice` trait (read/write, `tick`, IRQ lines,
-  exit requests); a versioned C ABI (version 2) and `ForeignDevice` for
-  devices built as separate native libraries; Python devices.
+  exit requests, `is_mapped`); a versioned C ABI (version 2) and `ForeignDevice`
+  for devices built as separate native libraries; Python devices.
 - Standard peripherals with a QEMU `virt`-like map: RAM, CLINT, NS16550A
   UART subset, `sifive,test0` test finisher.
 - Coprocessor slot for custom-0/custom-1 instructions (`trait Coprocessor`,
