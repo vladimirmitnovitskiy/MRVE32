@@ -13,7 +13,7 @@ To release: rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, set the same
 version in both `Cargo.toml` files, and push a `vX.Y.Z` tag (see
 `.github/workflows/release.yml`).
 
-## [Unreleased]
+## [0.1.0] - 2026-11-02
 
 First public release (0.1.0).
 
