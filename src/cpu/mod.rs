@@ -10,13 +10,15 @@ pub mod instructions;
 pub mod trap;
 
 use csr::{CsrError, CsrFile};
-pub use trap::{Exception, Trap};
+pub use trap::{Exception, Interrupt, Trap, TrapCause};
 
 pub struct Cpu {
     regs: [Reg; 32],
     pub pc: Reg,
     pub csrs: CsrFile,
     coprocessor: Option<Box<dyn Coprocessor>>,
+    /// Stalled in WFI until an enabled interrupt becomes pending.
+    waiting: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +45,7 @@ impl Cpu {
             pc,
             csrs: CsrFile::new(),
             coprocessor: None,
+            waiting: false,
         }
     }
 
@@ -52,8 +55,7 @@ impl Cpu {
     }
 
     /// Software-visible CSR write: applies WARL masks and rejects read-only
-    /// or unimplemented CSRs. To set raw state (e.g. `mip` pending bits),
-    /// write the fields of [`Cpu::csrs`] directly.
+    /// or unimplemented CSRs. Raw state can be set through [`Cpu::csrs`].
     pub fn write_csr(&mut self, csr: u16, val: Reg) -> Result<(), CsrError> {
         self.csrs.write(csr, val)
     }
@@ -72,35 +74,96 @@ impl Cpu {
         self.coprocessor = Some(coprocessor);
     }
 
-    /// Executes one instruction.
+    /// Whether the hart is stalled in `wfi`, waiting for an enabled
+    /// interrupt (`mip & mie != 0`) to become pending.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting
+    }
+
+    /// Advances the hart by one clock cycle.
     ///
-    /// Returns `None` if the instruction retired normally. Returns
-    /// `Some(trap)` if it raised a synchronous exception; in that case the
-    /// trap has already been taken exactly as hardware would (`mepc`,
-    /// `mcause`, `mtval` and `mstatus` updated, `pc` set to the `mtvec` base)
-    /// and no other architectural state was modified by the instruction.
+    /// 1. `mip` is sampled from the bus interrupt lines
+    ///    ([`BusDevice::irq_lines`]).
+    /// 2. If an enabled interrupt is pending and `mstatus.MIE` is set, the
+    ///    interrupt is taken instead of executing an instruction.
+    /// 3. Otherwise, unless stalled in `wfi`, one instruction is executed.
+    /// 4. `mcycle`, `minstret` and the bus ([`BusDevice::tick`]) advance.
+    ///
+    /// Returns `Some(trap)` if a trap (interrupt or synchronous exception)
+    /// was taken during this step. The trap has already been handled as
+    /// hardware would (`mepc`, `mcause`, `mtval` and `mstatus` updated, `pc`
+    /// set to the trap vector) and an instruction that raised an exception
+    /// has not modified any other architectural state.
     pub fn step(&mut self, bus: &mut dyn BusDevice) -> Option<Trap> {
-        match self.execute(bus) {
-            Ok(next_pc) => {
-                self.pc = next_pc;
-                None
+        self.csrs.cycle_written = false;
+        self.csrs.instret_written = false;
+        self.csrs.mip = bus.irq_lines() & (csr::MIP_MSIP | csr::MIP_MTIP | csr::MIP_MEIP);
+
+        let pending = self.csrs.mip & self.csrs.mie;
+        if pending != 0 {
+            self.waiting = false;
+        }
+
+        let mut retired = false;
+        let trap = if let Some(interrupt) = self.interrupt_to_take(pending) {
+            let trap = Trap {
+                cause: TrapCause::Interrupt(interrupt),
+                epc: self.pc,
+            };
+            self.take_trap(trap);
+            Some(trap)
+        } else if self.waiting {
+            None
+        } else {
+            match self.execute(bus) {
+                Ok(next_pc) => {
+                    self.pc = next_pc;
+                    retired = true;
+                    None
+                }
+                Err(exception) => {
+                    let trap = Trap {
+                        cause: TrapCause::Exception(exception),
+                        epc: self.pc,
+                    };
+                    self.take_trap(trap);
+                    Some(trap)
+                }
             }
-            Err(exception) => {
-                let trap = Trap {
-                    exception,
-                    epc: self.pc,
-                };
-                self.take_trap(trap);
-                Some(trap)
-            }
+        };
+
+        self.advance_counters(retired);
+        bus.tick(1);
+        trap
+    }
+
+    fn interrupt_to_take(&self, pending: Reg) -> Option<Interrupt> {
+        if self.csrs.mstatus & csr::MSTATUS_MIE == 0 {
+            return None;
+        }
+        Interrupt::PRIORITY
+            .into_iter()
+            .find(|interrupt| pending & interrupt.mask() != 0)
+    }
+
+    /// An instruction that writes a counter suppresses that counter's
+    /// increment, so the written value is what the next instruction reads.
+    /// Instructions that trap do not retire.
+    fn advance_counters(&mut self, retired: bool) {
+        let csrs = &mut self.csrs;
+        if csrs.mcountinhibit & csr::MCOUNTINHIBIT_CY == 0 && !csrs.cycle_written {
+            csrs.mcycle = csrs.mcycle.wrapping_add(1);
+        }
+        if retired && csrs.mcountinhibit & csr::MCOUNTINHIBIT_IR == 0 && !csrs.instret_written {
+            csrs.minstret = csrs.minstret.wrapping_add(1);
         }
     }
 
     fn take_trap(&mut self, trap: Trap) {
         let csrs = &mut self.csrs;
         csrs.mepc = trap.epc & !0b11;
-        csrs.mcause = trap.exception.code();
-        csrs.mtval = trap.exception.tval();
+        csrs.mcause = trap.cause.mcause();
+        csrs.mtval = trap.cause.tval();
 
         // MPIE <- MIE, MIE <- 0, MPP <- M
         let mie = csrs.mstatus & csr::MSTATUS_MIE != 0;
@@ -110,9 +173,15 @@ impl Cpu {
         }
         csrs.mstatus |= csr::MSTATUS_MPP;
 
-        // Synchronous exceptions always go to BASE, in both direct and
-        // vectored mode.
-        self.pc = csrs.mtvec & !0b11;
+        // Exceptions always go to BASE; in vectored mode (MODE=1) interrupts
+        // go to BASE + 4 * cause.
+        let base = csrs.mtvec & !0b11;
+        self.pc = match trap.cause {
+            TrapCause::Interrupt(interrupt) if csrs.mtvec & 0b11 == 1 => {
+                base.wrapping_add(4 * interrupt.code())
+            }
+            _ => base,
+        };
     }
 
     fn exec_csr(
@@ -409,9 +478,14 @@ impl Cpu {
             // Single hart, no caches: memory ordering and instruction-fetch
             // coherence are trivially satisfied.
             Instruction::Fence | Instruction::FenceI => {}
-            // No interrupts are delivered yet, so WFI is implemented as a NOP
-            // (explicitly permitted by the privileged spec).
-            Instruction::Wfi => {}
+            // WFI retires and stalls the hart until an enabled interrupt is
+            // pending (regardless of mstatus.MIE). If one is already pending,
+            // it completes immediately.
+            Instruction::Wfi => {
+                if self.csrs.mip & self.csrs.mie == 0 {
+                    self.waiting = true;
+                }
+            }
 
             // Custom
             Instruction::Custom { opcode, raw } => {
@@ -459,6 +533,53 @@ mod tests {
     use crate::devices::ram::Ram;
 
     const TRAP_VECTOR: Reg = 0x1800;
+    const CLINT_BASE: Reg = 0x0200_0000;
+    const NOP: u32 = 0x0000_0013;
+    const WFI: u32 = 0x1050_0073;
+
+    /// Устройство, постоянно выставляющее заданные линии прерываний
+    struct IrqSource(Reg);
+
+    impl BusDevice for IrqSource {
+        fn read_u8(&mut self, addr: Reg) -> Result<u8, crate::BusError> {
+            Err(crate::BusError::AddressNotFound(addr))
+        }
+        fn read_u16(&mut self, addr: Reg) -> Result<u16, crate::BusError> {
+            Err(crate::BusError::AddressNotFound(addr))
+        }
+        fn read_u32(&mut self, addr: Reg) -> Result<u32, crate::BusError> {
+            Err(crate::BusError::AddressNotFound(addr))
+        }
+        fn write_u8(&mut self, addr: Reg, _: u8) -> Result<(), crate::BusError> {
+            Err(crate::BusError::AddressNotFound(addr))
+        }
+        fn write_u16(&mut self, addr: Reg, _: u16) -> Result<(), crate::BusError> {
+            Err(crate::BusError::AddressNotFound(addr))
+        }
+        fn write_u32(&mut self, addr: Reg, _: u32) -> Result<(), crate::BusError> {
+            Err(crate::BusError::AddressNotFound(addr))
+        }
+        fn irq_lines(&self) -> Reg {
+            self.0
+        }
+    }
+
+    /// setup_env + CLINT по адресу CLINT_BASE, mtimecmp = `mtimecmp`
+    fn setup_env_with_clint(program: &[u32], mtimecmp: u64) -> (Cpu, Bus) {
+        use crate::devices::clint::{CLINT_SIZE, Clint};
+        let (cpu, mut bus) = setup_env(program);
+        bus.map_device(CLINT_BASE, CLINT_SIZE, Box::new(Clint::new()))
+            .unwrap();
+        bus.write_u32(CLINT_BASE + 0x4000, mtimecmp as u32).unwrap();
+        bus.write_u32(CLINT_BASE + 0x4004, (mtimecmp >> 32) as u32)
+            .unwrap();
+        (cpu, bus)
+    }
+
+    fn enable_interrupts(cpu: &mut Cpu, mie: Reg) {
+        cpu.write_csr(csr::MIE, mie).unwrap();
+        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MIE).unwrap();
+    }
 
     // Mock-сопроцессор для проверки механизма attach_coprocessor
     struct MockCoprocessor;
@@ -493,7 +614,8 @@ mod tests {
 
     /// Проверяет, что trap взят: возвращен ожидаемый Trap и CSR обновлены
     fn assert_trap(cpu: &Cpu, trap: Option<Trap>, exception: Exception, epc: Reg) {
-        assert_eq!(trap, Some(Trap { exception, epc }));
+        let cause = TrapCause::Exception(exception);
+        assert_eq!(trap, Some(Trap { cause, epc }));
         assert_eq!(cpu.pc, TRAP_VECTOR);
         assert_eq!(cpu.csrs.mepc, epc);
         assert_eq!(cpu.csrs.mcause, exception.code());
@@ -866,7 +988,7 @@ mod tests {
         assert_eq!(
             trap,
             Some(Trap {
-                exception,
+                cause: TrapCause::Exception(exception),
                 epc: 0x1002
             })
         );
@@ -1196,18 +1318,17 @@ mod tests {
     }
 
     #[test]
-    fn test_fence_fence_i_and_wfi_act_as_nop() {
+    fn test_fence_and_fence_i_act_as_nop() {
         let (mut cpu, mut bus) = setup_env(&[
             0x0000_000F, // fence
             0x0000_100F, // fence.i
-            0x1050_0073, // wfi
             0x02A0_0093, // addi x1, x0, 42
         ]);
 
-        for _ in 0..4 {
+        for _ in 0..3 {
             assert_eq!(cpu.step(&mut bus), None);
         }
-        assert_eq!(cpu.pc, 0x1010);
+        assert_eq!(cpu.pc, 0x100C);
         assert_eq!(cpu.read_reg(1), 42);
     }
 
@@ -1315,5 +1436,215 @@ mod tests {
         cpu.pc = 0x1008;
         let trap = cpu.step(&mut bus);
         assert_trap(&cpu, trap, Exception::IllegalInstruction(write), 0x1008);
+    }
+
+    #[test]
+    fn test_timer_interrupt_is_taken_between_instructions() {
+        let (mut cpu, mut bus) = setup_env_with_clint(&[NOP; 8], 3);
+        enable_interrupts(&mut cpu, csr::MIP_MTIP);
+
+        // mtime = 0, 1, 2: инструкции выполняются
+        for _ in 0..3 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        // mtime = 3 >= mtimecmp: прерывание вместо следующей инструкции
+        let trap = cpu.step(&mut bus);
+        let cause = TrapCause::Interrupt(Interrupt::MachineTimer);
+        assert_eq!(trap, Some(Trap { cause, epc: 0x100C }));
+        assert_eq!(cpu.pc, TRAP_VECTOR);
+        assert_eq!(cpu.csrs.mepc, 0x100C);
+        assert_eq!(cpu.csrs.mcause, 0x8000_0007);
+        assert_eq!(cpu.csrs.mtval, 0);
+        assert_ne!(cpu.csrs.mip & csr::MIP_MTIP, 0);
+
+        let mstatus = cpu.csrs.mstatus;
+        assert_eq!(
+            mstatus & csr::MSTATUS_MIE,
+            0,
+            "MIE сброшен на входе в обработчик"
+        );
+        assert_ne!(mstatus & csr::MSTATUS_MPIE, 0);
+    }
+
+    #[test]
+    fn test_interrupt_masked_by_mstatus_mie_and_mie() {
+        let (mut cpu, mut bus) = setup_env_with_clint(&[NOP; 8], 0);
+
+        // Прерывание висит в mip, но mie = 0
+        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MIE).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.read_csr(csr::MIP), Ok(csr::MIP_MTIP));
+
+        // mie разрешает, но глобальный mstatus.MIE = 0
+        cpu.write_csr(csr::MIE, csr::MIP_MTIP).unwrap();
+        cpu.write_csr(csr::MSTATUS, 0).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
+
+        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MIE).unwrap();
+        assert!(matches!(
+            cpu.step(&mut bus),
+            Some(Trap {
+                cause: TrapCause::Interrupt(Interrupt::MachineTimer),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_interrupt_priority_external_software_timer() {
+        let all = csr::MIP_MEIP | csr::MIP_MSIP | csr::MIP_MTIP;
+        let take = |lines: Reg| {
+            let (mut cpu, mut bus) = setup_env(&[NOP; 4]);
+            bus.map_device(0x3000_0000, 4, Box::new(IrqSource(lines)))
+                .unwrap();
+            enable_interrupts(&mut cpu, all);
+            match cpu.step(&mut bus) {
+                Some(Trap {
+                    cause: TrapCause::Interrupt(i),
+                    ..
+                }) => i,
+                other => panic!("ожидалось прерывание, получено {other:?}"),
+            }
+        };
+
+        assert_eq!(take(all), Interrupt::MachineExternal);
+        assert_eq!(
+            take(csr::MIP_MSIP | csr::MIP_MTIP),
+            Interrupt::MachineSoftware
+        );
+        assert_eq!(take(csr::MIP_MTIP), Interrupt::MachineTimer);
+    }
+
+    #[test]
+    fn test_software_interrupt_via_clint_msip() {
+        // sw x2, 0(x1): запись 1 в msip
+        let (mut cpu, mut bus) = setup_env_with_clint(&[0x0020_A023, NOP], u64::MAX);
+        enable_interrupts(&mut cpu, csr::MIP_MSIP);
+        cpu.write_reg(1, CLINT_BASE);
+        cpu.write_reg(2, 1);
+
+        assert_eq!(cpu.step(&mut bus), None);
+        let trap = cpu.step(&mut bus);
+        let cause = TrapCause::Interrupt(Interrupt::MachineSoftware);
+        assert_eq!(trap, Some(Trap { cause, epc: 0x1004 }));
+        assert_eq!(cpu.csrs.mcause, 0x8000_0003);
+    }
+
+    #[test]
+    fn test_vectored_mtvec_dispatches_interrupts_by_cause() {
+        let (mut cpu, mut bus) = setup_env_with_clint(&[NOP; 4], 0);
+        cpu.write_csr(csr::MTVEC, TRAP_VECTOR | 1).unwrap();
+        enable_interrupts(&mut cpu, csr::MIP_MTIP);
+
+        assert!(cpu.step(&mut bus).is_some());
+        assert_eq!(cpu.pc, TRAP_VECTOR + 4 * 7);
+    }
+
+    #[test]
+    fn test_wfi_stalls_until_interrupt_pending_with_mie_disabled() {
+        // mstatus.MIE = 0: WFI просыпается, но прерывание не берется
+        let (mut cpu, mut bus) = setup_env_with_clint(&[WFI, 0x02A0_0093], 5);
+        cpu.write_csr(csr::MIE, csr::MIP_MTIP).unwrap();
+
+        assert_eq!(cpu.step(&mut bus), None); // wfi, mtime 0 -> 1
+        assert!(cpu.is_waiting());
+        for _ in 0..4 {
+            // mtime 1..4: ждем
+            assert_eq!(cpu.step(&mut bus), None);
+            assert!(cpu.is_waiting());
+            assert_eq!(cpu.pc, 0x1004);
+            assert_eq!(cpu.read_reg(1), 0);
+        }
+        // mtime = 5: просыпаемся и выполняем addi
+        assert_eq!(cpu.step(&mut bus), None);
+        assert!(!cpu.is_waiting());
+        assert_eq!(cpu.read_reg(1), 42);
+        assert_eq!(cpu.csrs.mcycle, 6);
+        assert_eq!(
+            cpu.csrs.minstret, 2,
+            "в состоянии ожидания инструкции не завершаются"
+        );
+    }
+
+    #[test]
+    fn test_wfi_wakes_into_interrupt_handler() {
+        let (mut cpu, mut bus) = setup_env_with_clint(&[WFI, NOP], 3);
+        enable_interrupts(&mut cpu, csr::MIP_MTIP);
+
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.step(&mut bus), None);
+        let trap = cpu.step(&mut bus);
+        let cause = TrapCause::Interrupt(Interrupt::MachineTimer);
+        assert_eq!(
+            trap,
+            Some(Trap { cause, epc: 0x1004 }),
+            "mepc указывает на инструкцию после wfi"
+        );
+        assert!(!cpu.is_waiting());
+    }
+
+    #[test]
+    fn test_wfi_does_not_stall_if_interrupt_already_pending() {
+        let (mut cpu, mut bus) = setup_env_with_clint(&[WFI, NOP], 0);
+        cpu.write_csr(csr::MIE, csr::MIP_MTIP).unwrap();
+
+        assert_eq!(cpu.step(&mut bus), None);
+        assert!(!cpu.is_waiting());
+        assert_eq!(cpu.pc, 0x1004);
+    }
+
+    #[test]
+    fn test_cycle_and_instret_counting() {
+        let (mut cpu, mut bus) = setup_env(&[NOP, NOP, NOP, 0xFFFF_FFFF]);
+
+        for _ in 0..3 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        assert_eq!(cpu.csrs.mcycle, 3);
+        assert_eq!(cpu.csrs.minstret, 3);
+
+        // Инструкция, вызвавшая исключение, не завершается (не retire)
+        assert!(cpu.step(&mut bus).is_some());
+        assert_eq!(cpu.csrs.mcycle, 4);
+        assert_eq!(cpu.csrs.minstret, 3);
+    }
+
+    #[test]
+    fn test_counter_write_suppresses_increment() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0xB020_5073, // csrwi minstret, 0
+            0xB020_20F3, // csrr  x1, minstret
+            0xB000_5073, // csrwi mcycle, 0
+            0xB000_2173, // csrr  x2, mcycle
+        ]);
+        for _ in 0..4 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        assert_eq!(
+            cpu.read_reg(1),
+            0,
+            "записанное значение видит следующая инструкция"
+        );
+        assert_eq!(cpu.read_reg(2), 0);
+        // minstret: запись 0 (без инкремента), затем 3 завершенные инструкции
+        assert_eq!(cpu.csrs.minstret, 3);
+        // mcycle: запись 0 на 3-м шаге (без инкремента), затем 1 такт
+        assert_eq!(cpu.csrs.mcycle, 1);
+    }
+
+    #[test]
+    fn test_mcountinhibit_stops_counters() {
+        let (mut cpu, mut bus) = setup_env(&[NOP; 4]);
+        cpu.write_csr(
+            csr::MCOUNTINHIBIT,
+            csr::MCOUNTINHIBIT_CY | csr::MCOUNTINHIBIT_IR,
+        )
+        .unwrap();
+        for _ in 0..4 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        assert_eq!(cpu.csrs.mcycle, 0);
+        assert_eq!(cpu.csrs.minstret, 0);
     }
 }

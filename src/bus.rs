@@ -12,9 +12,17 @@ pub struct Bus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BusError {
     AddressNotFound(Reg),
-    Overlap { start: Reg, length: Reg },
+    Overlap {
+        start: Reg,
+        length: Reg,
+    },
+    /// The device does not support this access width or alignment at the address.
+    InvalidAccess(Reg),
+    /// The device rejects the access in its current state (e.g. busy).
+    DeviceBusy(Reg),
 }
 
 impl Default for Bus {
@@ -30,6 +38,17 @@ pub trait BusDevice {
     fn write_u8(&mut self, addr: Reg, val: u8) -> Result<(), BusError>;
     fn write_u16(&mut self, addr: Reg, val: u16) -> Result<(), BusError>;
     fn write_u32(&mut self, addr: Reg, val: u32) -> Result<(), BusError>;
+
+    /// Advances the device's notion of time by `cycles` CPU clock cycles.
+    /// Called by the CPU once per step.
+    fn tick(&mut self, _cycles: u64) {}
+
+    /// Interrupt lines asserted by this device, as a bit mask in `mip` layout
+    /// (`MIP_MSIP`, `MIP_MTIP`, `MIP_MEIP`). Lines from all devices on a bus
+    /// are OR-ed together.
+    fn irq_lines(&self) -> Reg {
+        0
+    }
 }
 
 impl Bus {
@@ -107,6 +126,16 @@ impl BusDevice for Bus {
         let (device, offset) = self.find_device(addr)?;
         device.write_u32(offset, val)
     }
+    fn tick(&mut self, cycles: u64) {
+        for entry in &mut self.devices {
+            entry.device.tick(cycles);
+        }
+    }
+    fn irq_lines(&self) -> Reg {
+        self.devices
+            .iter()
+            .fold(0, |lines, entry| lines | entry.device.irq_lines())
+    }
 }
 
 impl fmt::Display for BusError {
@@ -122,6 +151,12 @@ impl fmt::Display for BusError {
                     start,
                     start.wrapping_add(*length)
                 )
+            }
+            BusError::InvalidAccess(addr) => {
+                write!(f, "Bus error: unsupported access at 0x{:08X}", addr)
+            }
+            BusError::DeviceBusy(addr) => {
+                write!(f, "Bus error: device busy at 0x{:08X}", addr)
             }
         }
     }
@@ -299,6 +334,71 @@ mod tests {
         // Доступ через корневую шину ко вложенной
         root_bus.write_u16(0x1008, 0xCAFE).unwrap();
         assert_eq!(root_bus.read_u16(0x1008), Ok(0xCAFE));
+    }
+
+    #[test]
+    fn test_tick_and_irq_lines_reach_nested_devices() {
+        struct IrqDevice {
+            ticks: u64,
+            line: Reg,
+        }
+        impl BusDevice for IrqDevice {
+            fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError> {
+                Err(BusError::AddressNotFound(addr))
+            }
+            fn read_u16(&mut self, addr: Reg) -> Result<u16, BusError> {
+                Err(BusError::AddressNotFound(addr))
+            }
+            fn read_u32(&mut self, _addr: Reg) -> Result<u32, BusError> {
+                Ok(self.ticks as u32)
+            }
+            fn write_u8(&mut self, addr: Reg, _val: u8) -> Result<(), BusError> {
+                Err(BusError::AddressNotFound(addr))
+            }
+            fn write_u16(&mut self, addr: Reg, _val: u16) -> Result<(), BusError> {
+                Err(BusError::AddressNotFound(addr))
+            }
+            fn write_u32(&mut self, addr: Reg, _val: u32) -> Result<(), BusError> {
+                Err(BusError::AddressNotFound(addr))
+            }
+            fn tick(&mut self, cycles: u64) {
+                self.ticks += cycles;
+            }
+            fn irq_lines(&self) -> Reg {
+                self.line
+            }
+        }
+
+        let mut sub_bus = Bus::new();
+        sub_bus
+            .map_device(
+                0x0,
+                4,
+                Box::new(IrqDevice {
+                    ticks: 0,
+                    line: 1 << 11,
+                }),
+            )
+            .unwrap();
+        let mut root = Bus::new();
+        root.map_device(0x1000, 0x10, Box::new(sub_bus)).unwrap();
+        root.map_device(
+            0x2000,
+            4,
+            Box::new(IrqDevice {
+                ticks: 0,
+                line: 1 << 7,
+            }),
+        )
+        .unwrap();
+        root.map_device(0x3000, 4, Box::new(MockMemory::new(4)))
+            .unwrap();
+
+        root.tick(3);
+        root.tick(2);
+        assert_eq!(root.read_u32(0x1000), Ok(5));
+        assert_eq!(root.read_u32(0x2000), Ok(5));
+        assert_eq!(root.irq_lines(), (1 << 11) | (1 << 7));
     }
 
     #[test]

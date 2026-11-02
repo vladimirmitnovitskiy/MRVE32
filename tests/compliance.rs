@@ -13,7 +13,7 @@ use std::rc::Rc;
 const BASE: Reg = 0x8000_0000;
 const RAM_SIZE: usize = 1024 * 1024;
 const MAX_STEPS: usize = 100_000;
-const EXPECTED_TESTS: usize = 62; // 42 rv32ui + 8 rv32um + 12 rv32mi
+const EXPECTED_TESTS: usize = 64; // 42 rv32ui + 8 rv32um + 14 rv32mi
 
 /// RAM that records the first non-zero word written to `tohost`.
 struct HtifRam {

@@ -81,17 +81,96 @@ impl fmt::Display for Exception {
 
 impl std::error::Error for Exception {}
 
+/// A Machine-level interrupt source, listed in priority order (highest first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Interrupt {
+    MachineExternal,
+    MachineSoftware,
+    MachineTimer,
+}
+
+impl Interrupt {
+    /// Interrupt priority order defined by the privileged spec.
+    pub const PRIORITY: [Interrupt; 3] = [
+        Interrupt::MachineExternal,
+        Interrupt::MachineSoftware,
+        Interrupt::MachineTimer,
+    ];
+
+    /// Exception code (without the interrupt bit); also the bit index in
+    /// `mip`/`mie`.
+    pub fn code(&self) -> Reg {
+        match self {
+            Interrupt::MachineSoftware => 3,
+            Interrupt::MachineTimer => 7,
+            Interrupt::MachineExternal => 11,
+        }
+    }
+
+    /// Bit mask of this interrupt in `mip`/`mie`.
+    pub fn mask(&self) -> Reg {
+        1 << self.code()
+    }
+}
+
+impl fmt::Display for Interrupt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Interrupt::MachineSoftware => "machine software interrupt",
+            Interrupt::MachineTimer => "machine timer interrupt",
+            Interrupt::MachineExternal => "machine external interrupt",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Why a trap was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapCause {
+    Exception(Exception),
+    Interrupt(Interrupt),
+}
+
+impl TrapCause {
+    /// Value written to `mcause` (bit 31 set for interrupts).
+    pub fn mcause(&self) -> Reg {
+        match self {
+            TrapCause::Exception(e) => e.code(),
+            TrapCause::Interrupt(i) => (1 << 31) | i.code(),
+        }
+    }
+
+    /// Value written to `mtval` (always 0 for interrupts).
+    pub fn tval(&self) -> Reg {
+        match self {
+            TrapCause::Exception(e) => e.tval(),
+            TrapCause::Interrupt(_) => 0,
+        }
+    }
+}
+
+impl fmt::Display for TrapCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TrapCause::Exception(e) => e.fmt(f),
+            TrapCause::Interrupt(i) => i.fmt(f),
+        }
+    }
+}
+
 /// A trap that has been taken by the CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Trap {
-    pub exception: Exception,
-    /// Address of the instruction that raised the exception (written to `mepc`).
+    pub cause: TrapCause,
+    /// Written to `mepc`: the instruction that raised the exception, or for
+    /// an interrupt the instruction that will execute after `mret`.
     pub epc: Reg,
 }
 
 impl fmt::Display for Trap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} (pc=0x{:08X})", self.exception, self.epc)
+        write!(f, "{} (pc=0x{:08X})", self.cause, self.epc)
     }
 }
 

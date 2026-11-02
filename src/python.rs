@@ -1,15 +1,18 @@
-use crate::{Bus, BusDevice, Cpu, Ram, Reg};
+use crate::devices::clint::{CLINT_SIZE, Clint};
+use crate::{Bus, BusDevice, Cpu, Ram, Reg, TrapCause};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
-/// Информация о взятом trap (исключение уже обработано CPU)
+/// Информация о взятом trap (исключение или прерывание уже обработано CPU)
 #[pyclass(name = "Trap", frozen, get_all)]
 pub struct PyTrap {
-    /// Значение mcause
+    /// Значение mcause (бит 31 установлен для прерываний)
     cause: Reg,
+    /// True для прерывания, False для исключения
+    is_interrupt: bool,
     /// Значение mtval
     tval: Reg,
-    /// Адрес инструкции, вызвавшей исключение
+    /// Значение mepc
     epc: Reg,
     /// Текстовое описание
     description: String,
@@ -19,8 +22,12 @@ pub struct PyTrap {
 impl PyTrap {
     fn __repr__(&self) -> String {
         format!(
-            "Trap(cause={}, tval=0x{:08X}, epc=0x{:08X}, description='{}')",
-            self.cause, self.tval, self.epc, self.description
+            "Trap(cause=0x{:08X}, is_interrupt={}, tval=0x{:08X}, epc=0x{:08X}, description='{}')",
+            self.cause,
+            if self.is_interrupt { "True" } else { "False" },
+            self.tval,
+            self.epc,
+            self.description
         )
     }
 }
@@ -33,27 +40,42 @@ pub struct Emulator {
 
 #[pymethods]
 impl Emulator {
-    /// Конструктор: создает CPU и подключает RAM заданного размера по адресу pc
+    /// Конструктор: создает CPU, подключает RAM заданного размера по адресу pc
+    /// и CLINT (таймер + программное прерывание) по адресу clint_base
+    /// (None — без CLINT)
     #[new]
-    #[pyo3(signature = (pc=0x1000, ram_size=4096))]
-    pub fn new(pc: Reg, ram_size: usize) -> Self {
+    #[pyo3(signature = (pc=0x1000, ram_size=4096, clint_base=Some(0x0200_0000)))]
+    pub fn new(pc: Reg, ram_size: usize, clint_base: Option<Reg>) -> PyResult<Self> {
+        let ram_len = Reg::try_from(ram_size)
+            .map_err(|_| PyValueError::new_err("ram_size must fit in 32 bits"))?;
         let mut bus = Bus::new();
-        bus.map_device(pc, ram_size as Reg, Box::new(Ram::new(ram_size)))
-            .expect("Failed  to map RAM");
+        bus.map_device(pc, ram_len, Box::new(Ram::new(ram_size)))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(base) = clint_base {
+            bus.map_device(base, CLINT_SIZE, Box::new(Clint::new()))
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
         let cpu = Cpu::new(pc);
-        Self { cpu, bus }
+        Ok(Self { cpu, bus })
     }
 
-    /// Сделать один такт (Fetch -> Decode -> Execute).
-    /// Возвращает None, либо Trap, если инструкция вызвала исключение
-    /// (trap уже взят: pc указывает на mtvec).
+    /// Сделать один такт: принять прерывание либо выполнить инструкцию.
+    /// Возвращает None, либо Trap, если был взят trap
+    /// (pc уже указывает на обработчик из mtvec).
     pub fn step(&mut self) -> Option<PyTrap> {
         self.cpu.step(&mut self.bus).map(|trap| PyTrap {
-            cause: trap.exception.code(),
-            tval: trap.exception.tval(),
+            cause: trap.cause.mcause(),
+            is_interrupt: matches!(trap.cause, TrapCause::Interrupt(_)),
+            tval: trap.cause.tval(),
             epc: trap.epc,
-            description: trap.exception.to_string(),
+            description: trap.cause.to_string(),
         })
+    }
+
+    /// True, если CPU ожидает прерывания в WFI
+    #[getter]
+    pub fn is_waiting(&self) -> bool {
+        self.cpu.is_waiting()
     }
 
     /// Чтение регистра x0..x31
