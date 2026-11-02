@@ -47,6 +47,7 @@ impl Bus {
         let new_start = start as u64;
         let new_end = new_start + length as u64;
 
+        // 1. Проверяем пересечения
         for entry in &self.devices {
             let entry_start = entry.start as u64;
             let entry_end = entry_start + entry.length as u64;
@@ -56,21 +57,25 @@ impl Bus {
             }
         }
 
-        self.devices.push(DeviceEntry {
-            start,
-            length,
-            device,
-        });
+        let insert_pos = self.devices.partition_point(|entry| entry.start < start);
+        self.devices.insert(
+            insert_pos,
+            DeviceEntry {
+                start,
+                length,
+                device,
+            },
+        );
         Ok(())
     }
 
     fn find_device(&mut self, addr: Reg) -> Result<(&mut Box<dyn BusDevice>, Reg), BusError> {
-        for entry in &mut self.devices {
-            if addr >= entry.start {
-                let offset = addr - entry.start;
-                if offset < entry.length {
-                    return Ok((&mut entry.device, offset));
-                }
+        let idx = self.devices.partition_point(|entry| entry.start <= addr);
+        if idx > 0 {
+            let entry = &mut self.devices[idx - 1];
+            let offset = addr.wrapping_sub(entry.start);
+            if offset < entry.length {
+                return Ok((&mut entry.device, offset));
             }
         }
         Err(BusError::AddressNotFound(addr))
