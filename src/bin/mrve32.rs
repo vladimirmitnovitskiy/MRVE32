@@ -9,19 +9,21 @@ use mrve32::devices::clint::CLINT_SIZE;
 use mrve32::devices::finisher::FINISHER_SIZE;
 use mrve32::{
     Bus, Clint, Cpu, ElfImage, Exception, Machine, Ram, Reg, StopReason, TestFinisher, Trap,
-    TrapCause, Uart, disassemble,
+    TrapCause, Uart, disassemble, is_compressed,
 };
 
 const USAGE: &str = "\
 Usage: mrve32 [OPTIONS] <FIRMWARE.elf>
 
-Runs bare-metal RV32IM firmware on a QEMU-virt-like memory map:
+Runs bare-metal RV32IMC firmware on a QEMU-virt-like memory map:
   RAM       0x80000000  (--ram-size, default 128M)
   UART      0x10000000  NS16550A; transmitted bytes go to stdout
   finisher  0x00100000  sifive,test0; firmware writes its exit status here
   CLINT     0x02000000  mtime/mtimecmp/msip
 
 Options:
+  --isa rv32imc|rv32im   instruction set; rv32im traps on 2-byte-aligned
+                         jump targets [default: rv32imc]
   --ram-base ADDR        RAM base address [default: 0x80000000]
   --ram-size SIZE        RAM size, optional K/M suffix [default: 128M]
   --uart ADDR|none       UART base address [default: 0x10000000]
@@ -51,6 +53,7 @@ const EXIT_TRAP: u8 = 126;
 
 struct Options {
     firmware: String,
+    compressed: bool,
     ram_base: Reg,
     ram_size: usize,
     uart: Option<Reg>,
@@ -106,6 +109,7 @@ fn parse_size(s: &str) -> Result<usize, String> {
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut opts = Options {
         firmware: String::new(),
+        compressed: true,
         ram_base: 0x8000_0000,
         ram_size: 128 << 20,
         uart: Some(0x1000_0000),
@@ -128,6 +132,14 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Parsed, String> 
             "-V" | "--version" => {
                 println!("mrve32 {}", env!("CARGO_PKG_VERSION"));
                 return Ok(Parsed::Exit(ExitCode::SUCCESS));
+            }
+            "--isa" => {
+                let v = value(&arg)?;
+                opts.compressed = match v.to_ascii_lowercase().as_str() {
+                    "rv32imc" => true,
+                    "rv32im" => false,
+                    _ => return Err(format!("--isa: unsupported ISA '{v}' (rv32imc or rv32im)")),
+                };
             }
             "--ram-base" => opts.ram_base = parse_addr(&arg, &value(&arg)?)?,
             "--ram-size" => opts.ram_size = parse_size(&value(&arg)?)?,
@@ -207,7 +219,9 @@ fn build_machine(opts: &Options, line_open: Rc<Cell<bool>>) -> Result<Machine, S
 
     let data = std::fs::read(&opts.firmware).map_err(|e| format!("{}: {e}", opts.firmware))?;
     let image = ElfImage::parse(&data).map_err(|e| format!("{}: {e}", opts.firmware))?;
-    let mut machine = Machine::new(Cpu::new(image.entry), bus);
+    let mut cpu = Cpu::new(image.entry);
+    cpu.set_compressed(opts.compressed);
+    let mut machine = Machine::new(cpu, bus);
     machine
         .load_elf(&image)
         .map_err(|e| format!("{}: {e}", opts.firmware))?;
@@ -252,12 +266,12 @@ fn main() -> ExitCode {
         if trace {
             let mut err = io::stderr().lock();
             if let Some(raw) = e.instruction {
-                let _ = writeln!(
-                    err,
-                    "{:08x}: {raw:08x}  {}",
-                    e.pc,
-                    disassemble(raw, Some(e.pc))
-                );
+                let text = disassemble(raw, Some(e.pc));
+                let _ = if is_compressed(raw) {
+                    writeln!(err, "{:08x}: {raw:04x}      {text}", e.pc)
+                } else {
+                    writeln!(err, "{:08x}: {raw:08x}  {text}", e.pc)
+                };
             }
             if let Some(trap) = &e.trap {
                 let _ = writeln!(err, "          trap: {}", describe(trap));

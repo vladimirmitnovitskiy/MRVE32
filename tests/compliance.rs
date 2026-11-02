@@ -13,7 +13,7 @@ use std::rc::Rc;
 const BASE: Reg = 0x8000_0000;
 const RAM_SIZE: usize = 1024 * 1024;
 const MAX_STEPS: usize = 100_000;
-const EXPECTED_TESTS: usize = 64; // 42 rv32ui + 8 rv32um + 14 rv32mi
+const EXPECTED_TESTS: usize = 65; // 42 rv32ui + 8 rv32um + 14 rv32mi + 1 rv32uc
 
 /// RAM that records the first non-zero word written to `tohost`.
 struct HtifRam {
@@ -46,7 +46,8 @@ impl BusDevice for HtifRam {
     }
 }
 
-fn run_test(elf: &[u8]) -> Result<(), String> {
+/// Runs one test; `compressed` selects RV32IMC or RV32IM (IALIGN 16/32).
+fn run_test(elf: &[u8], compressed: bool) -> Result<(), String> {
     let image = ElfImage::parse(elf).expect("valid ELF");
     let tohost_addr = image.symbol("tohost").expect("symbol `tohost`");
     let mut ram = Ram::new(RAM_SIZE);
@@ -69,6 +70,7 @@ fn run_test(elf: &[u8]) -> Result<(), String> {
     .unwrap();
 
     let mut cpu = Cpu::new(image.entry);
+    cpu.set_compressed(compressed);
     for _ in 0..MAX_STEPS {
         // Traps are part of normal test flow and are handled by the test's
         // own trap vector.
@@ -100,22 +102,33 @@ fn test_official_riscv_tests() {
         "Expected {EXPECTED_TESTS} riscv-tests ELF files in tests/isa"
     );
 
+    // Every test runs on RV32IMC; the ones that do not use C also run on
+    // RV32IM, which exercises IALIGN = 32 (e.g. in rv32mi-p-ma_fetch).
+    let mut runs = 0;
     let mut failures = Vec::new();
     for path in &entries {
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
         let elf = fs::read(path).expect("read ELF");
-        match run_test(&elf) {
-            Ok(()) => println!("[PASS] {name}"),
-            Err(reason) => {
-                println!("[FAIL] {name}: {reason}");
-                failures.push(format!("{name}: {reason}"));
+        let isas: &[(&str, bool)] = if name.starts_with("rv32uc-") {
+            &[("rv32imc", true)]
+        } else {
+            &[("rv32imc", true), ("rv32im", false)]
+        };
+        for &(isa, compressed) in isas {
+            runs += 1;
+            match run_test(&elf, compressed) {
+                Ok(()) => println!("[PASS] {name} ({isa})"),
+                Err(reason) => {
+                    println!("[FAIL] {name} ({isa}): {reason}");
+                    failures.push(format!("{name} ({isa}): {reason}"));
+                }
             }
         }
     }
 
     println!(
-        "\n=== riscv-tests: {}/{} passed ===",
-        entries.len() - failures.len(),
+        "\n=== riscv-tests: {}/{runs} runs passed ({} ELF files) ===",
+        runs - failures.len(),
         entries.len()
     );
     assert!(

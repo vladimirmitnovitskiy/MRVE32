@@ -44,6 +44,23 @@ def test_trap_object():
     assert emu.pc == emu.ram_base + 0x100
 
 
+def test_compressed_instructions_and_rv32im_mode():
+    emu = Emulator()
+    assert emu.compressed and emu.read_csr(0x301) & (1 << 2), "misa.C"
+    # c.li a0, 5; c.addi a0, -1; addi a1, a0, 1 (32-bit, 2-byte aligned)
+    emu.write_bytes(emu.ram_base, bytes.fromhex("1545" "7d15" "9305" "1500"))
+    for _ in range(3):
+        assert emu.step() is None
+    assert (emu.read_reg(10), emu.read_reg(11), emu.pc) == (4, 5, emu.ram_base + 8)
+
+    emu = Emulator(compressed=False)
+    assert not emu.compressed and not emu.read_csr(0x301) & (1 << 2)
+    emu.write_csr(MTVEC, emu.ram_base + 0x100)
+    emu.load_program(emu.ram_base, [0x0060_00EF])  # jal ra, 6: misaligned without C
+    trap = emu.step()
+    assert (trap.cause, trap.tval) == (0, emu.ram_base + 6)
+
+
 def test_errors():
     emu = Emulator()
     with pytest.raises(IndexError):

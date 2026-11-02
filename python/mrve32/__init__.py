@@ -1,4 +1,4 @@
-"""MRVE32: deterministic RV32IM microcontroller emulator.
+"""MRVE32: deterministic RV32IMC microcontroller emulator.
 
 The core (CPU, bus, RAM, CLINT, ELF loader) is implemented in Rust
 (``mrve32._native``). Peripherals are pluggable: ``Emulator.map_device``

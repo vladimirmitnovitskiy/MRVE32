@@ -28,7 +28,7 @@ if [[ -z "$SRC" ]]; then
 fi
 ISA="$SRC/isa"
 
-# Only the tests MRVE32 targets: M-mode-only RV32IM + Zicsr, no C/A/F/S/U.
+# Only the tests MRVE32 targets: M-mode-only RV32IMC + Zicsr, no A/F/S/U.
 # rv32mi tests that need PMP (pmpaddr) or Sdtrig (breakpoint) are not included.
 UI_TESTS="add addi and andi auipc beq bge bgeu blt bltu bne fence_i jal jalr
           lb lbu ld_st lh lhu lui lw ma_data or ori sb sh simple sll slli slt
@@ -37,6 +37,7 @@ UM_TESTS="div divu mul mulh mulhsu mulhu rem remu"
 MI_TESTS="csr illegal ma_addr ma_fetch mcsr sbreak scall shamt
           lh-misaligned lw-misaligned sh-misaligned sw-misaligned
           zicntr instret_overflow"
+UC_TESTS="rvc"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -44,8 +45,8 @@ trap 'rm -rf "$WORK"' EXIT
 # Assemble and link in separate steps with a fixed object name: a one-step
 # gcc build records a random temp object name (ccXXXXXX.o) in the symbol
 # table, which makes every rebuild differ.
-build() { # <suite dir> <test name> <output name>
-    local flags=(-march=rv32im_zicsr_zifencei -mabi=ilp32 -mcmodel=medany
+build() { # <suite dir> <test name> <output name> [march]
+    local flags=(-march="${4:-rv32im_zicsr_zifencei}" -mabi=ilp32 -mcmodel=medany
                  -fvisibility=hidden)
     (
         cd "$WORK"
@@ -61,4 +62,5 @@ OUT="$(cd "$OUT" && pwd)"
 for t in $UI_TESTS; do build rv32ui "$t" "rv32ui-p-$t"; done
 for t in $UM_TESTS; do build rv32um "$t" "rv32um-p-$t"; done
 for t in $MI_TESTS; do build rv32mi "$t" "rv32mi-p-$t"; done
+for t in $UC_TESTS; do build rv32uc "$t" "rv32uc-p-$t" rv32imc_zicsr_zifencei; done
 echo "built $(ls "$OUT"/*.elf | wc -l) ELF files into $OUT"

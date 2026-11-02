@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "mrve32"
-description = "Deterministic RV32IM microcontroller emulator with pluggable memory-mapped devices"
+description = "Deterministic RV32IMC microcontroller emulator with pluggable memory-mapped devices"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"

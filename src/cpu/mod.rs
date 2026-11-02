@@ -6,6 +6,7 @@ use crate::types::Reg;
 pub mod coprocessor;
 pub mod csr;
 pub mod decode;
+pub mod decode_c;
 pub mod disasm;
 pub mod instructions;
 pub mod trap;
@@ -31,10 +32,12 @@ enum CsrOp {
     Clear,
 }
 
-/// Instructions are 4-byte aligned (no C extension), so any control transfer
-/// to an address with bits `[1:0]` set raises instruction-address-misaligned.
-fn check_jump_target(target: Reg) -> Result<Reg, Exception> {
-    if target & 0b11 != 0 {
+/// Control transfers must reach an IALIGN-aligned address: 2 bytes with the
+/// C extension, 4 without. Bit 0 is never set (`jalr` clears it, offsets are
+/// even), so with C this never traps.
+fn check_jump_target(target: Reg, compressed: bool) -> Result<Reg, Exception> {
+    let mask = if compressed { 0b01 } else { 0b11 };
+    if target & mask != 0 {
         Err(Exception::InstructionAddressMisaligned(target))
     } else {
         Ok(target)
@@ -51,6 +54,18 @@ impl Cpu {
             waiting: false,
             last_fetch: None,
         }
+    }
+
+    /// Enables or disables the C extension (enabled by default), e.g. to
+    /// model an RV32IM core: `misa.C`, instruction alignment (IALIGN 16/32)
+    /// and decoding of 16-bit instructions follow it.
+    pub fn set_compressed(&mut self, enabled: bool) {
+        self.csrs.compressed = enabled;
+    }
+
+    /// Whether the C extension is enabled.
+    pub fn compressed(&self) -> bool {
+        self.csrs.compressed
     }
 
     /// Software-visible CSR read (same rules as a CSR instruction).
@@ -173,7 +188,7 @@ impl Cpu {
 
     fn take_trap(&mut self, trap: Trap) {
         let csrs = &mut self.csrs;
-        csrs.mepc = trap.epc & !0b11;
+        csrs.mepc = trap.epc & !1;
         csrs.mcause = trap.cause.mcause();
         csrs.mtval = trap.cause.tval();
 
@@ -219,21 +234,52 @@ impl Cpu {
         Ok(())
     }
 
+    /// Fetches the instruction at `pc`: `(word, length)`. A 16-bit
+    /// instruction (low bits != 0b11, C enabled) is returned zero-extended.
+    /// An access fault reports the address of the half that failed.
+    fn fetch(&self, bus: &mut dyn BusDevice, pc: Reg) -> Result<(u32, Reg), Exception> {
+        let fault = Exception::InstructionAccessFault;
+        if !self.csrs.compressed {
+            return bus.read_u32(pc).map(|w| (w, 4)).map_err(|_| fault(pc));
+        }
+        // Fast path: one aligned 32-bit read (it may fail near the end of a
+        // device even though a 16-bit instruction there is fine).
+        if pc & 0b11 == 0
+            && let Ok(word) = bus.read_u32(pc)
+        {
+            return Ok(if word & 0b11 == 0b11 {
+                (word, 4)
+            } else {
+                (word & 0xFFFF, 2)
+            });
+        }
+        let lo = bus.read_u16(pc).map_err(|_| fault(pc))?;
+        if lo & 0b11 != 0b11 {
+            return Ok((lo.into(), 2));
+        }
+        let hi_addr = pc.wrapping_add(2);
+        let hi = bus.read_u16(hi_addr).map_err(|_| fault(hi_addr))?;
+        Ok((u32::from(hi) << 16 | u32::from(lo), 4))
+    }
+
     /// Executes the instruction at `pc` and returns the next pc. On error no
     /// register or CSR has been modified.
     fn execute(&mut self, bus: &mut dyn BusDevice) -> Result<Reg, Exception> {
         let pc = self.pc;
 
         // 1. Fetch
-        check_jump_target(pc)?;
-        let raw = bus
-            .read_u32(pc)
-            .map_err(|_| Exception::InstructionAccessFault(pc))?;
+        let compressed = self.csrs.compressed;
+        check_jump_target(pc, compressed)?;
+        let (raw, len) = self.fetch(bus, pc)?;
         self.last_fetch = Some(raw);
         // 2. Decode
-        let inst = decode::decode(raw)?;
+        let inst = if len == 2 {
+            decode_c::decode_compressed(raw as u16)?
+        } else {
+            decode::decode(raw)?
+        };
 
-        let mut next_pc = pc.wrapping_add(4);
+        let mut next_pc = pc.wrapping_add(len);
         // 3. Execute
         match inst {
             // R-type
@@ -376,13 +422,13 @@ impl Cpu {
             // Jumps: the target is checked before rd is written, so a
             // misaligned jump leaves rd untouched.
             Instruction::Jal { rd, imm } => {
-                let target = check_jump_target(pc.wrapping_add(imm as u32))?;
+                let target = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 self.write_reg(rd, next_pc);
                 next_pc = target;
             }
             Instruction::Jalr { rd, rs1, imm } => {
                 let target = self.read_reg(rs1).wrapping_add(imm as u32) & !1;
-                let target = check_jump_target(target)?;
+                let target = check_jump_target(target, compressed)?;
                 self.write_reg(rd, next_pc);
                 next_pc = target;
             }
@@ -390,32 +436,32 @@ impl Cpu {
             // Conditional branches (only a taken branch can be misaligned)
             Instruction::Beq { rs1, rs2, imm } => {
                 if self.read_reg(rs1) == self.read_reg(rs2) {
-                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 }
             }
             Instruction::Bne { rs1, rs2, imm } => {
                 if self.read_reg(rs1) != self.read_reg(rs2) {
-                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 }
             }
             Instruction::Blt { rs1, rs2, imm } => {
                 if (self.read_reg(rs1) as i32) < (self.read_reg(rs2) as i32) {
-                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 }
             }
             Instruction::Bge { rs1, rs2, imm } => {
                 if (self.read_reg(rs1) as i32) >= (self.read_reg(rs2) as i32) {
-                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 }
             }
             Instruction::Bltu { rs1, rs2, imm } => {
                 if self.read_reg(rs1) < self.read_reg(rs2) {
-                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 }
             }
             Instruction::Bgeu { rs1, rs2, imm } => {
                 if self.read_reg(rs1) >= self.read_reg(rs2) {
-                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32), compressed)?;
                 }
             }
 
@@ -477,7 +523,8 @@ impl Cpu {
             Instruction::Ecall => return Err(Exception::EnvironmentCallFromM),
             Instruction::Ebreak => return Err(Exception::Breakpoint(pc)),
             Instruction::Mret => {
-                next_pc = self.csrs.mepc;
+                // The effective mepc (bit 1 hidden when IALIGN = 32).
+                next_pc = self.csrs.read(csr::MEPC).expect("mepc is implemented");
 
                 // MIE <- MPIE, MPIE <- 1, MPP <- M (least-privileged mode supported)
                 let csrs = &mut self.csrs;
@@ -508,7 +555,7 @@ impl Cpu {
                 let mut regs = self.regs;
                 let mut target = next_pc;
                 coproc.execute(opcode, raw, &mut regs, &mut target, bus)?;
-                next_pc = check_jump_target(target)?;
+                next_pc = check_jump_target(target, compressed)?;
                 regs[0] = 0;
                 self.regs = regs;
             }
@@ -994,6 +1041,7 @@ mod tests {
     #[test]
     fn test_misaligned_pc_traps_on_fetch() {
         let (mut cpu, mut bus) = setup_env(&[0x0000_0013; 4]);
+        cpu.set_compressed(false);
         cpu.pc = 0x1002;
 
         let trap = cpu.step(&mut bus);
@@ -1008,8 +1056,78 @@ mod tests {
         assert_eq!(cpu.pc, TRAP_VECTOR);
         assert_eq!(cpu.csrs.mcause, 0);
         assert_eq!(cpu.csrs.mtval, 0x1002);
-        // mepc[1:0] всегда нулевые при IALIGN=32
-        assert_eq!(cpu.csrs.mepc, 0x1000);
+        // При IALIGN=32 mepc[1] читается как ноль.
+        assert_eq!(cpu.read_csr(csr::MEPC), Ok(0x1000));
+    }
+
+    #[test]
+    fn test_compressed_and_mixed_length_execution() {
+        // c.li a0, 5; addi a1, a0, 1 (32-bit at 0x1002); c.add a0, a1;
+        // c.j .+0 at 0x1008 is replaced by a nop pair below.
+        let (mut cpu, mut bus) = setup_env(&[]);
+        let code: [u16; 6] = [0x4515, 0x0593, 0x0015, 0x952e, 0x0001, 0x0001];
+        for (i, &h) in code.iter().enumerate() {
+            bus.write_u16(0x1000 + 2 * i as Reg, h).unwrap();
+        }
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!((cpu.pc, cpu.last_fetch()), (0x1002, Some(0x4515)));
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!((cpu.pc, cpu.last_fetch()), (0x1006, Some(0x0015_0593)));
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.read_reg(10), 11);
+        assert_eq!(cpu.read_reg(11), 6);
+        assert_eq!(cpu.pc, 0x1008);
+    }
+
+    #[test]
+    fn test_compressed_jumps_link_pc_plus_2() {
+        let (mut cpu, mut bus) = setup_env(&[]);
+        // 0x1000: c.jal .+6 -> 0x1006; 0x1006: c.jr ra -> 0x1002
+        bus.write_u16(0x1000, 0x2019).unwrap();
+        bus.write_u16(0x1006, 0x8082).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!((cpu.pc, cpu.read_reg(1)), (0x1006, 0x1002));
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.pc, 0x1002);
+
+        // jal x1, 6 is legal with C: the target only needs 2-byte alignment.
+        let (mut cpu, mut bus) = setup_env(&[0x0060_00EF]);
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!((cpu.pc, cpu.read_reg(1)), (0x1006, 0x1004));
+    }
+
+    #[test]
+    fn test_illegal_compressed_reports_16_bits() {
+        let (mut cpu, mut bus) = setup_env(&[0xFFFF_0000]); // c.unimp (0x0000)
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::IllegalInstruction(0), 0x1000);
+
+        // Without C, a 16-bit encoding is part of a 32-bit word.
+        let (mut cpu, mut bus) = setup_env(&[0x0000_4515]);
+        cpu.set_compressed(false);
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::IllegalInstruction(0x4515), 0x1000);
+    }
+
+    #[test]
+    fn test_fetch_fault_on_second_half() {
+        // A 32-bit instruction in the last 2 bytes of RAM (0x1000..0x2000).
+        let (mut cpu, mut bus) = setup_env(&[]);
+        bus.write_u16(0x1FFE, 0x0013).unwrap();
+        cpu.pc = 0x1FFE;
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::InstructionAccessFault(0x2000),
+            0x1FFE,
+        );
+
+        // A 16-bit one there executes (the aligned fast path would fail).
+        let (mut cpu, mut bus) = setup_env(&[]);
+        bus.write_u16(0x1FFC, 0x0001).unwrap(); // c.nop
+        cpu.pc = 0x1FFC;
+        assert_eq!(cpu.step(&mut bus), None);
     }
 
     #[test]
@@ -1153,6 +1271,7 @@ mod tests {
     fn test_misaligned_jalr_traps_without_writing_rd() {
         // jalr x1, x2, 2 -> цель 0x1102 не выровнена по 4 байтам
         let (mut cpu, mut bus) = setup_env(&[0x0021_00E7]);
+        cpu.set_compressed(false);
         cpu.write_reg(2, 0x1100);
 
         let trap = cpu.step(&mut bus);
@@ -1173,6 +1292,7 @@ mod tests {
     fn test_misaligned_jal_traps_without_writing_rd() {
         // jal x1, 6 -> цель 0x1006
         let (mut cpu, mut bus) = setup_env(&[0x0060_00EF]);
+        cpu.set_compressed(false);
 
         let trap = cpu.step(&mut bus);
         assert_trap(
@@ -1190,6 +1310,7 @@ mod tests {
             0x0000_9363, // bne x1, x0, 6 (не взят: x1 == 0) -> без исключения
             0x0000_0363, // beq x0, x0, 6 (взят) -> цель 0x100A
         ]);
+        cpu.set_compressed(false);
 
         assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1004);

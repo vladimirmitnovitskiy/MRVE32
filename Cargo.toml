@@ -3,7 +3,7 @@ name = "mrve32"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "RV32IM machine-mode RISC-V MCU emulator with pluggable memory-mapped devices"
+description = "RV32IMC machine-mode RISC-V MCU emulator with pluggable memory-mapped devices"
 
 [workspace]
 members = ["modules/snn"]

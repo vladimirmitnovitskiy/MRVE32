@@ -474,10 +474,20 @@ impl Emulator {
 #[pymethods]
 impl Emulator {
     #[new]
-    #[pyo3(signature = (ram_base = 0x8000_0000, ram_size = 64 * 1024, *, clint_base = Some(0x0200_0000)))]
-    fn new(ram_base: Reg, ram_size: usize, clint_base: Option<Reg>) -> PyResult<Self> {
+    #[pyo3(signature = (
+        ram_base = 0x8000_0000, ram_size = 64 * 1024, *,
+        clint_base = Some(0x0200_0000), compressed = true
+    ))]
+    fn new(
+        ram_base: Reg,
+        ram_size: usize,
+        clint_base: Option<Reg>,
+        compressed: bool,
+    ) -> PyResult<Self> {
+        let mut cpu = Cpu::new(ram_base);
+        cpu.set_compressed(compressed);
         let mut emu = Self {
-            machine: Machine::new(Cpu::new(ram_base), Bus::new()),
+            machine: Machine::new(cpu, Bus::new()),
             symbols: None,
             ram_base,
             clint_base,
@@ -505,6 +515,17 @@ impl Emulator {
     #[getter]
     fn clint_base(&self) -> Option<Reg> {
         self.clint_base
+    }
+
+    /// C extension enabled (RV32IMC); False models an RV32IM core.
+    #[getter]
+    fn compressed(&self) -> bool {
+        self.machine.cpu.compressed()
+    }
+
+    #[setter]
+    fn set_compressed(&mut self, enabled: bool) {
+        self.machine.cpu.set_compressed(enabled);
     }
 
     /// Maps a device at `base`.

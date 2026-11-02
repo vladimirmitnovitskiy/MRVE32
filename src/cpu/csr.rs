@@ -55,7 +55,10 @@ pub const MCOUNTINHIBIT_CY: Reg = 1 << 0; // Inhibit mcycle
 pub const MCOUNTINHIBIT_IR: Reg = 1 << 2; // Inhibit minstret
 
 /// `misa`: MXL=1 (XLEN=32), extensions I and M.
+/// `misa` without C: MXL = 32, I, M.
 pub const MISA_VALUE: Reg = (1 << 30) | (1 << (b'I' - b'A')) | (1 << (b'M' - b'A'));
+/// `misa.C`.
+pub const MISA_C: Reg = 1 << (b'C' - b'A');
 
 const MSTATUS_WRITABLE: Reg = MSTATUS_MIE | MSTATUS_MPIE;
 const MIE_WRITABLE: Reg = MIP_MSIP | MIP_MTIP | MIP_MEIP;
@@ -104,6 +107,8 @@ pub struct CsrFile {
     /// automatic increment for that instruction.
     pub(crate) cycle_written: bool,
     pub(crate) instret_written: bool,
+    /// C extension enabled: IALIGN = 16 instead of 32.
+    pub(crate) compressed: bool,
 }
 
 impl Default for CsrFile {
@@ -122,6 +127,7 @@ impl Default for CsrFile {
             minstret: 0,
             cycle_written: false,
             instret_written: false,
+            compressed: true,
         }
     }
 }
@@ -147,12 +153,14 @@ impl CsrFile {
     pub fn read(&self, csr: u16) -> Result<Reg, CsrError> {
         Ok(match csr {
             MSTATUS => self.mstatus,
-            MISA => MISA_VALUE,
+            MISA => MISA_VALUE | if self.compressed { MISA_C } else { 0 },
             MIE => self.mie,
             MTVEC => self.mtvec,
             MSTATUSH => 0,
             MSCRATCH => self.mscratch,
-            MEPC => self.mepc,
+            // With IALIGN = 32, mepc[1] reads as zero (but is kept).
+            MEPC if self.compressed => self.mepc,
+            MEPC => self.mepc & !0b11,
             MCAUSE => self.mcause,
             MTVAL => self.mtval,
             MIP => self.mip,
@@ -181,8 +189,8 @@ impl CsrFile {
             // MODE is WARL: 0 = direct, 1 = vectored; reserved values map onto these.
             MTVEC => self.mtvec = val & !0b10,
             MSCRATCH => self.mscratch = val,
-            // IALIGN=32: mepc[1:0] are always zero.
-            MEPC => self.mepc = val & !0b11,
+            // mepc[0] is always zero (IALIGN >= 16).
+            MEPC => self.mepc = val & !1,
             MCAUSE => self.mcause = val,
             MTVAL => self.mtval = val,
             // Only CY and IR are writable (TM is read-only zero, no hpm counters).
@@ -235,11 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn test_misa_reports_rv32im_and_ignores_writes() {
+    fn test_misa_reports_extensions_and_ignores_writes() {
         let mut csrs = CsrFile::new();
-        assert_eq!(csrs.read(MISA), Ok(0x4000_1100));
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1104), "RV32IMC");
         assert_eq!(csrs.write(MISA, 0), Ok(()));
-        assert_eq!(csrs.read(MISA), Ok(0x4000_1100));
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1104));
+        csrs.compressed = false;
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1100), "RV32IM");
     }
 
     #[test]
@@ -286,8 +296,14 @@ mod tests {
         csrs.write(MSTATUS, 0).unwrap();
         assert_eq!(csrs.read(MSTATUS), Ok(MSTATUS_MPP));
 
+        // IALIGN = 16: bit 0 is always zero.
         csrs.write(MEPC, 0x1003).unwrap();
+        assert_eq!(csrs.read(MEPC), Ok(0x1002));
+        // IALIGN = 32: bit 1 reads as zero but is kept.
+        csrs.compressed = false;
         assert_eq!(csrs.read(MEPC), Ok(0x1000));
+        csrs.compressed = true;
+        assert_eq!(csrs.read(MEPC), Ok(0x1002));
 
         csrs.write(MTVEC, 0x2001).unwrap();
         assert_eq!(csrs.read(MTVEC), Ok(0x2001)); // vectored

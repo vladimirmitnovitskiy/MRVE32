@@ -77,8 +77,24 @@ fn test_trace_and_stats() {
     let err = stderr(&out);
     let first = err.lines().next().unwrap();
     assert_eq!(first, "80000000: 00100117  auipc sp, 0x100");
-    assert!(err.contains("jal 0x80000030"), "call main");
+    assert!(
+        err.contains("80000024: 2011      jal 0x80000028"),
+        "c.jal main"
+    );
     assert!(err.lines().last().unwrap().contains("instructions retired"));
+}
+
+#[test]
+fn test_rv32im_rejects_compressed_firmware() {
+    // The firmware is built for rv32imc; without C its first 16-bit
+    // instruction is part of an illegal 32-bit word.
+    let out = run(&["--isa", "rv32im", FIRMWARE], None);
+    assert_eq!(out.status.code(), Some(126));
+    assert!(
+        stderr(&out).contains("illegal instruction"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -96,6 +112,7 @@ fn test_stop_on_trap() {
 fn test_usage_errors() {
     for args in [
         &["--bogus"][..],
+        &["--isa", "rv64gc", FIRMWARE],
         &[],
         &["--ram-size", "0", FIRMWARE],
         &["--uart", "0x80000000", FIRMWARE],

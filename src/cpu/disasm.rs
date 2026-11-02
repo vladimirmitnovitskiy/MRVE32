@@ -5,6 +5,7 @@ use std::fmt;
 
 use super::csr;
 use super::decode::decode;
+use super::decode_c::decode_compressed;
 use super::instructions::Instruction;
 use crate::types::Reg;
 
@@ -50,18 +51,44 @@ pub fn csr_name(csr: u16) -> Option<&'static str> {
     })
 }
 
-/// Disassembles one instruction word. With `pc`, branch and jump targets
-/// are shown as absolute addresses, otherwise as offsets.
+/// Whether an instruction word (or its low half) is a 16-bit instruction.
+pub fn is_compressed(raw: u32) -> bool {
+    raw & 0b11 != 0b11
+}
+
+/// Disassembles one instruction: a 32-bit word, or a 16-bit (C)
+/// instruction in the low half when its low bits are not `0b11`. With `pc`,
+/// branch and jump targets are shown as absolute addresses, otherwise as
+/// offsets.
 ///
 /// ```
 /// use mrve32::disassemble;
 /// assert_eq!(disassemble(0x00F00093, None), "li ra, 15");
 /// assert_eq!(disassemble(0x0080006F, Some(0x8000_0000)), "j 0x80000008");
+/// assert_eq!(disassemble(0x852e, None), "mv a0, a1"); // c.mv
 /// assert_eq!(disassemble(0xFFFFFFFF, None), ".word 0xffffffff");
 /// ```
 pub fn disassemble(raw: u32, pc: Option<Reg>) -> String {
+    if is_compressed(raw) {
+        let half = raw as u16;
+        return match decode_compressed(half) {
+            Ok(inst) => Disasm {
+                inst,
+                pc,
+                compressed: true,
+            }
+            .to_string(),
+            Err(_) if half == 0 => "unimp".to_string(),
+            Err(_) => format!(".short 0x{half:04x}"),
+        };
+    }
     match decode(raw) {
-        Ok(inst) => Disasm { inst, pc }.to_string(),
+        Ok(inst) => Disasm {
+            inst,
+            pc,
+            compressed: false,
+        }
+        .to_string(),
         Err(_) => format!(".word 0x{raw:08x}"),
     }
 }
@@ -72,6 +99,7 @@ impl fmt::Display for Instruction {
         Disasm {
             inst: *self,
             pc: None,
+            compressed: false,
         }
         .fmt(f)
     }
@@ -80,6 +108,8 @@ impl fmt::Display for Instruction {
 struct Disasm {
     inst: Instruction,
     pc: Option<Reg>,
+    /// Expanded from a 16-bit instruction (objdump prints `c.mv` as `mv`).
+    compressed: bool,
 }
 
 impl Disasm {
@@ -121,6 +151,9 @@ impl fmt::Display for Disasm {
         }
 
         match self.inst {
+            I::Add { rd, rs1: 0, rs2 } if self.compressed => {
+                write!(f, "mv {}, {}", r(rd), r(rs2))
+            }
             I::Add { rd, rs1, rs2 } => rtype!("add", rd, rs1, rs2),
             I::Sub { rd, rs1: 0, rs2 } => write!(f, "neg {}, {}", r(rd), r(rs2)),
             I::Sub { rd, rs1, rs2 } => rtype!("sub", rd, rs1, rs2),
@@ -156,6 +189,7 @@ impl fmt::Display for Disasm {
             I::Xori { rd, rs1, imm: -1 } => write!(f, "not {}, {}", r(rd), r(rs1)),
             I::Xori { rd, rs1, imm } => itype!("xori", rd, rs1, imm),
             I::Ori { rd, rs1, imm } => itype!("ori", rd, rs1, imm),
+            I::Andi { rd, rs1, imm: 255 } => write!(f, "zext.b {}, {}", r(rd), r(rs1)),
             I::Andi { rd, rs1, imm } => itype!("andi", rd, rs1, imm),
             I::Slli { rd, rs1, imm } => itype!("slli", rd, rs1, format_args!("0x{:x}", imm & 0x1F)),
             I::Srli { rd, rs1, imm } => itype!("srli", rd, rs1, format_args!("0x{:x}", imm & 0x1F)),
@@ -268,6 +302,7 @@ mod tests {
             (0x00153513, "seqz a0, a0"),
             (0x00A03533, "snez a0, a0"),
             (0x00351513, "slli a0, a0, 0x3"),
+            (0x0ff7f693, "zext.b a3, a5"),
             (0x41F55513, "srai a0, a0, 0x1f"),
             (0x00812503, "lw a0, 8(sp)"),
             (0xFFC44583, "lbu a1, -4(s0)"),
@@ -310,9 +345,45 @@ mod tests {
         assert_eq!(inst.to_string(), "lw a0, 8(sp)");
     }
 
+    /// GNU objdump 2.46 on an ELF assembled with `-march=rv32imc` (binary
+    /// mode would decode RV64C).
+    #[test]
+    fn test_compressed_matches_objdump() {
+        let cases: &[(u32, Option<Reg>, &str)] = &[
+            (0x2019, Some(0), "jal 0x6"),
+            (0x3ffd, Some(2), "jal 0x0"),
+            (0x852e, None, "mv a0, a1"),
+            (0x0000, None, "unimp"),
+            (0x2000, None, ".short 0x2000"),
+            (0x7179, None, "addi sp, sp, -48"),
+            (0x757d, None, "lui a0, 0xfffff"),
+            (0x8105, None, "srli a0, a0, 0x1"),
+            (0xdd7d, Some(0x16), "beqz a0, 0x14"),
+            (0xe111, Some(0x18), "bnez a0, 0x1c"),
+            (0xbffd, Some(0x1a), "j 0x18"),
+            (0x1ffc, None, "addi a5, sp, 1020"),
+            (0x50fe, None, "lw ra, 252(sp)"),
+            (0xdffe, None, "sw t6, 252(sp)"),
+            (0x0800, None, "addi s0, sp, 16"),
+            (0x0001, None, "nop"),
+            (0x557d, None, "li a0, -1"),
+            (0x8082, None, "ret"),
+            (0x9002, None, "ebreak"),
+            (0x9502, None, "jalr a0"),
+            (0x952e, None, "add a0, a0, a1"),
+            (0xc62a, None, "sw a0, 12(sp)"),
+        ];
+        for &(raw, pc, text) in cases {
+            assert_eq!(disassemble(raw, pc), text, "raw 0x{raw:04x}");
+        }
+        // The 32-bit add with rs1 = zero is not printed as mv.
+        assert_eq!(disassemble(0x00b00533, None), "add a0, zero, a1");
+    }
+
     #[test]
     fn test_invalid_and_custom() {
-        assert_eq!(disassemble(0x0000_0000, None), ".word 0x00000000");
+        assert_eq!(disassemble(0x0000_0000, None), "unimp");
+        assert_eq!(disassemble(0x0000_007F, None), ".word 0x0000007f");
         assert_eq!(disassemble(0x0000_000B, None), "custom-0 0x0000000b");
     }
 }

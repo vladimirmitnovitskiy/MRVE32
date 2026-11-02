@@ -89,7 +89,10 @@ class TestFinisher:
     def __mrve32_device__(self) -> object: ...
 
 def disassemble(word: int, pc: int | None = None) -> str:
-    """One instruction in GNU objdump style; absolute targets with ``pc``."""
+    """One instruction in GNU objdump style; absolute targets with ``pc``.
+
+    ``word`` is a 32-bit instruction, or a 16-bit (C) one in the low half
+    when its low two bits are not ``0b11``."""
 
 class Emulator:
     """A RISC-V MCU: CPU and bus with RAM and an optional CLINT.
@@ -104,11 +107,14 @@ class Emulator:
         ram_size: int = 64 * 1024,
         *,
         clint_base: int | None = 0x0200_0000,
+        compressed: bool = True,
     ) -> None: ...
     @property
     def ram_base(self) -> int: ...
     @property
     def clint_base(self) -> int | None: ...
+    compressed: bool
+    """C extension enabled (RV32IMC); ``False`` models an RV32IM core."""
 
     # Devices
     def map_device(self, base: int, device: object, *, size: int | None = None) -> None:
