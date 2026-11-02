@@ -38,7 +38,7 @@ Changelog = "https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/CHANGELOG.
 exclude = ["**/__pycache__/**", "**/*.pyc"]
 features = ["python"]
 python-source = "python"
-module-name = "mrve32_snn._native"
+module-name = "mrve32_snn._snn"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

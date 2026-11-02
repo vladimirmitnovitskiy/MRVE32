@@ -1,4 +1,4 @@
-//! Python bindings (`mrve32_snn._native`), built with the `python` feature.
+//! Python bindings (`mrve32_snn._snn`), built with the `python` feature.
 //!
 //! The accelerator is handed to `mrve32.Emulator.map_device` through the
 //! device C ABI (`mrve32::plugin`), like any third-party device module.
@@ -91,8 +91,11 @@ impl PySnnAccelerator {
     }
 }
 
+// Not `_native`: with workspace feature unification (`--all-features`) this
+// crate links `mrve32` with its own `#[pymodule] _native`, and two
+// `PyInit__native` symbols would collide.
 #[pymodule]
-fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _snn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<PySnnAccelerator>()?;
     // Memory map (docs/snn-accelerator-v0.md), the single source of truth

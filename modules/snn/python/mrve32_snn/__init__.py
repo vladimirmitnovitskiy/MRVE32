@@ -22,7 +22,7 @@ import numpy as np
 import numpy.typing as npt
 from mrve32 import Emulator
 
-from ._native import (
+from ._snn import (
     BIAS_BASE,
     CTRL_CLEAR_VMEM,
     CTRL_START,
