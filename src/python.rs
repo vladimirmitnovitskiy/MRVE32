@@ -1,6 +1,29 @@
 use crate::{Bus, BusDevice, Cpu, Ram, Reg};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+
+/// Информация о взятом trap (исключение уже обработано CPU)
+#[pyclass(name = "Trap", frozen, get_all)]
+pub struct PyTrap {
+    /// Значение mcause
+    cause: Reg,
+    /// Значение mtval
+    tval: Reg,
+    /// Адрес инструкции, вызвавшей исключение
+    epc: Reg,
+    /// Текстовое описание
+    description: String,
+}
+
+#[pymethods]
+impl PyTrap {
+    fn __repr__(&self) -> String {
+        format!(
+            "Trap(cause={}, tval=0x{:08X}, epc=0x{:08X}, description='{}')",
+            self.cause, self.tval, self.epc, self.description
+        )
+    }
+}
 
 #[pyclass(unsendable)]
 pub struct Emulator {
@@ -21,11 +44,16 @@ impl Emulator {
         Self { cpu, bus }
     }
 
-    /// Сделать один такт (Fetch -> Decode -> Execute)
-    pub fn step(&mut self) -> PyResult<()> {
-        self.cpu
-            .step(&mut self.bus)
-            .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
+    /// Сделать один такт (Fetch -> Decode -> Execute).
+    /// Возвращает None, либо Trap, если инструкция вызвала исключение
+    /// (trap уже взят: pc указывает на mtvec).
+    pub fn step(&mut self) -> Option<PyTrap> {
+        self.cpu.step(&mut self.bus).map(|trap| PyTrap {
+            cause: trap.exception.code(),
+            tval: trap.exception.tval(),
+            epc: trap.epc,
+            description: trap.exception.to_string(),
+        })
     }
 
     /// Чтение регистра x0..x31
@@ -62,12 +90,16 @@ impl Emulator {
     }
 
     // CSR
-    pub fn read_csr(&self, csr: u16) -> Reg {
-        self.cpu.read_csr(csr)
+    pub fn read_csr(&self, csr: u16) -> PyResult<Reg> {
+        self.cpu
+            .read_csr(csr)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    pub fn write_csr(&mut self, csr: u16, val: Reg) {
-        self.cpu.write_csr(csr, val);
+    pub fn write_csr(&mut self, csr: u16, val: Reg) -> PyResult<()> {
+        self.cpu
+            .write_csr(csr, val)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     // Чтение и запись памяти напрямую через шину
@@ -100,5 +132,6 @@ impl Emulator {
 #[pymodule]
 fn mrve32(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Emulator>()?;
+    m.add_class::<PyTrap>()?;
     Ok(())
 }

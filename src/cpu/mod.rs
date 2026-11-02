@@ -1,6 +1,4 @@
-use std::fmt;
-
-use crate::bus::{BusDevice, BusError};
+use crate::bus::BusDevice;
 use crate::cpu::coprocessor::Coprocessor;
 use crate::cpu::instructions::Instruction;
 use crate::types::Reg;
@@ -9,14 +7,10 @@ pub mod coprocessor;
 pub mod csr;
 pub mod decode;
 pub mod instructions;
+pub mod trap;
 
-use csr::CsrFile;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuError {
-    IllegalInstruction(u32),
-    Bus(BusError),
-}
+use csr::{CsrError, CsrFile};
+pub use trap::{Exception, Trap};
 
 pub struct Cpu {
     regs: [Reg; 32],
@@ -25,9 +19,20 @@ pub struct Cpu {
     coprocessor: Option<Box<dyn Coprocessor>>,
 }
 
-impl From<BusError> for CpuError {
-    fn from(err: BusError) -> Self {
-        CpuError::Bus(err)
+#[derive(Clone, Copy)]
+enum CsrOp {
+    Write,
+    Set,
+    Clear,
+}
+
+/// Instructions are 4-byte aligned (no C extension), so any control transfer
+/// to an address with bits `[1:0]` set raises instruction-address-misaligned.
+fn check_jump_target(target: Reg) -> Result<Reg, Exception> {
+    if target & 0b11 != 0 {
+        Err(Exception::InstructionAddressMisaligned(target))
+    } else {
+        Ok(target)
     }
 }
 
@@ -40,49 +45,113 @@ impl Cpu {
             coprocessor: None,
         }
     }
-    fn trap(&mut self, cause: Reg) -> Reg {
-        self.write_csr(csr::MEPC, self.pc);
-        self.write_csr(csr::MCAUSE, cause);
 
-        // Сохраняем MIE в MPIE и зануляем MIE
-        let mstatus = self.read_csr(csr::MSTATUS);
-        let mie = (mstatus & csr::MSTATUS_MIE) != 0;
-        let mut new_mstatus = mstatus & !csr::MSTATUS_MIE;
-        if mie {
-            new_mstatus |= csr::MSTATUS_MPIE;
-        } else {
-            new_mstatus &= !csr::MSTATUS_MPIE;
-        }
-        self.write_csr(csr::MSTATUS, new_mstatus);
-
-        let mtvec = self.read_csr(csr::MTVEC);
-        mtvec & !0b11
-    }
-    pub fn read_csr(&self, csr: u16) -> Reg {
+    /// Software-visible CSR read (same rules as a CSR instruction).
+    pub fn read_csr(&self, csr: u16) -> Result<Reg, CsrError> {
         self.csrs.read(csr)
     }
-    pub fn write_csr(&mut self, csr: u16, val: Reg) {
-        self.csrs.write(csr, val);
+
+    /// Software-visible CSR write: applies WARL masks and rejects read-only
+    /// or unimplemented CSRs. To set raw state (e.g. `mip` pending bits),
+    /// write the fields of [`Cpu::csrs`] directly.
+    pub fn write_csr(&mut self, csr: u16, val: Reg) -> Result<(), CsrError> {
+        self.csrs.write(csr, val)
     }
+
     pub fn read_reg(&self, reg: usize) -> Reg {
         if reg == 0 { 0 } else { self.regs[reg] }
     }
+
     pub fn write_reg(&mut self, reg: usize, val: Reg) {
         if reg != 0 {
             self.regs[reg] = val;
         }
     }
+
     pub fn attach_coprocessor(&mut self, coprocessor: Box<dyn Coprocessor>) {
         self.coprocessor = Some(coprocessor);
     }
 
-    pub fn step(&mut self, bus: &mut dyn BusDevice) -> Result<(), CpuError> {
+    /// Executes one instruction.
+    ///
+    /// Returns `None` if the instruction retired normally. Returns
+    /// `Some(trap)` if it raised a synchronous exception; in that case the
+    /// trap has already been taken exactly as hardware would (`mepc`,
+    /// `mcause`, `mtval` and `mstatus` updated, `pc` set to the `mtvec` base)
+    /// and no other architectural state was modified by the instruction.
+    pub fn step(&mut self, bus: &mut dyn BusDevice) -> Option<Trap> {
+        match self.execute(bus) {
+            Ok(next_pc) => {
+                self.pc = next_pc;
+                None
+            }
+            Err(exception) => {
+                let trap = Trap {
+                    exception,
+                    epc: self.pc,
+                };
+                self.take_trap(trap);
+                Some(trap)
+            }
+        }
+    }
+
+    fn take_trap(&mut self, trap: Trap) {
+        let csrs = &mut self.csrs;
+        csrs.mepc = trap.epc & !0b11;
+        csrs.mcause = trap.exception.code();
+        csrs.mtval = trap.exception.tval();
+
+        // MPIE <- MIE, MIE <- 0, MPP <- M
+        let mie = csrs.mstatus & csr::MSTATUS_MIE != 0;
+        csrs.mstatus &= !(csr::MSTATUS_MIE | csr::MSTATUS_MPIE);
+        if mie {
+            csrs.mstatus |= csr::MSTATUS_MPIE;
+        }
+        csrs.mstatus |= csr::MSTATUS_MPP;
+
+        // Synchronous exceptions always go to BASE, in both direct and
+        // vectored mode.
+        self.pc = csrs.mtvec & !0b11;
+    }
+
+    fn exec_csr(
+        &mut self,
+        raw: u32,
+        csr: u16,
+        rd: usize,
+        op: CsrOp,
+        operand: Reg,
+        writes: bool,
+    ) -> Result<(), Exception> {
+        let illegal = Exception::IllegalInstruction(raw);
+        let old = self.csrs.read(csr).map_err(|_| illegal)?;
+        if writes {
+            let new = match op {
+                CsrOp::Write => operand,
+                CsrOp::Set => old | operand,
+                CsrOp::Clear => old & !operand,
+            };
+            self.csrs.write(csr, new).map_err(|_| illegal)?;
+        }
+        self.write_reg(rd, old);
+        Ok(())
+    }
+
+    /// Executes the instruction at `pc` and returns the next pc. On error no
+    /// register or CSR has been modified.
+    fn execute(&mut self, bus: &mut dyn BusDevice) -> Result<Reg, Exception> {
+        let pc = self.pc;
+
         // 1. Fetch
-        let raw = bus.read_u32(self.pc)?;
+        check_jump_target(pc)?;
+        let raw = bus
+            .read_u32(pc)
+            .map_err(|_| Exception::InstructionAccessFault(pc))?;
         // 2. Decode
         let inst = decode::decode(raw)?;
 
-        let mut next_pc = self.pc.wrapping_add(4);
+        let mut next_pc = pc.wrapping_add(4);
         // 3. Execute
         match inst {
             // R-type
@@ -120,20 +189,12 @@ impl Cpu {
                 self.write_reg(rd, res);
             }
             Instruction::Slt { rd, rs1, rs2 } => {
-                let res = if (self.read_reg(rs1) as i32) < (self.read_reg(rs2) as i32) {
-                    1
-                } else {
-                    0
-                };
-                self.write_reg(rd, res);
+                let res = (self.read_reg(rs1) as i32) < (self.read_reg(rs2) as i32);
+                self.write_reg(rd, res as Reg);
             }
             Instruction::Sltu { rd, rs1, rs2 } => {
-                let res = if self.read_reg(rs1) < self.read_reg(rs2) {
-                    1
-                } else {
-                    0
-                };
-                self.write_reg(rd, res);
+                let res = self.read_reg(rs1) < self.read_reg(rs2);
+                self.write_reg(rd, res as Reg);
             }
             // RV32M
             Instruction::Mul { rd, rs1, rs2 } => {
@@ -161,38 +222,26 @@ impl Cpu {
             Instruction::Div { rd, rs1, rs2 } => {
                 let a = self.read_reg(rs1) as i32;
                 let b = self.read_reg(rs2) as i32;
-                let res = if b == 0 {
-                    -1_i32 as u32
-                } else if a == i32::MIN && b == -1 {
-                    i32::MIN as u32
-                } else {
-                    (a / b) as u32
-                };
-                self.write_reg(rd, res);
+                // Division by zero yields -1; MIN / -1 overflows to MIN.
+                let res = if b == 0 { -1 } else { a.wrapping_div(b) };
+                self.write_reg(rd, res as u32);
             }
             Instruction::Divu { rd, rs1, rs2 } => {
                 let a = self.read_reg(rs1);
                 let b = self.read_reg(rs2);
-                let res = if b == 0 { u32::MAX } else { a / b };
-                self.write_reg(rd, res);
+                self.write_reg(rd, a.checked_div(b).unwrap_or(u32::MAX));
             }
             Instruction::Rem { rd, rs1, rs2 } => {
                 let a = self.read_reg(rs1) as i32;
                 let b = self.read_reg(rs2) as i32;
-                let res = if b == 0 {
-                    a as u32
-                } else if a == i32::MIN && b == -1 {
-                    0
-                } else {
-                    (a % b) as u32
-                };
-                self.write_reg(rd, res);
+                // Remainder by zero yields the dividend; MIN % -1 is 0.
+                let res = if b == 0 { a } else { a.wrapping_rem(b) };
+                self.write_reg(rd, res as u32);
             }
             Instruction::Remu { rd, rs1, rs2 } => {
                 let a = self.read_reg(rs1);
                 let b = self.read_reg(rs2);
-                let res = if b == 0 { a } else { a % b };
-                self.write_reg(rd, res);
+                self.write_reg(rd, a.checked_rem(b).unwrap_or(a));
             }
 
             // I-type
@@ -225,20 +274,12 @@ impl Cpu {
                 self.write_reg(rd, res);
             }
             Instruction::Slti { rd, rs1, imm } => {
-                let res = if (self.read_reg(rs1) as i32) < imm {
-                    1
-                } else {
-                    0
-                };
-                self.write_reg(rd, res);
+                let res = (self.read_reg(rs1) as i32) < imm;
+                self.write_reg(rd, res as Reg);
             }
             Instruction::Sltiu { rd, rs1, imm } => {
-                let res = if self.read_reg(rs1) < (imm as u32) {
-                    1
-                } else {
-                    0
-                };
-                self.write_reg(rd, res);
+                let res = self.read_reg(rs1) < (imm as u32);
+                self.write_reg(rd, res as Reg);
             }
 
             // U-type
@@ -246,198 +287,178 @@ impl Cpu {
                 self.write_reg(rd, imm as u32);
             }
             Instruction::Auipc { rd, imm } => {
-                let res = self.pc.wrapping_add(imm as u32);
+                let res = pc.wrapping_add(imm as u32);
                 self.write_reg(rd, res);
             }
 
-            // J-type
+            // Jumps: the target is checked before rd is written, so a
+            // misaligned jump leaves rd untouched.
             Instruction::Jal { rd, imm } => {
+                let target = check_jump_target(pc.wrapping_add(imm as u32))?;
                 self.write_reg(rd, next_pc);
-                next_pc = self.pc.wrapping_add(imm as u32);
+                next_pc = target;
             }
             Instruction::Jalr { rd, rs1, imm } => {
-                let target = (self.read_reg(rs1).wrapping_add(imm as u32)) & !1;
+                let target = self.read_reg(rs1).wrapping_add(imm as u32) & !1;
+                let target = check_jump_target(target)?;
                 self.write_reg(rd, next_pc);
                 next_pc = target;
             }
 
-            // Conditional Brunches
+            // Conditional branches (only a taken branch can be misaligned)
             Instruction::Beq { rs1, rs2, imm } => {
                 if self.read_reg(rs1) == self.read_reg(rs2) {
-                    next_pc = self.pc.wrapping_add(imm as u32);
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
                 }
             }
             Instruction::Bne { rs1, rs2, imm } => {
                 if self.read_reg(rs1) != self.read_reg(rs2) {
-                    next_pc = self.pc.wrapping_add(imm as u32);
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
                 }
             }
             Instruction::Blt { rs1, rs2, imm } => {
                 if (self.read_reg(rs1) as i32) < (self.read_reg(rs2) as i32) {
-                    next_pc = self.pc.wrapping_add(imm as u32);
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
                 }
             }
             Instruction::Bge { rs1, rs2, imm } => {
                 if (self.read_reg(rs1) as i32) >= (self.read_reg(rs2) as i32) {
-                    next_pc = self.pc.wrapping_add(imm as u32);
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
                 }
             }
             Instruction::Bltu { rs1, rs2, imm } => {
                 if self.read_reg(rs1) < self.read_reg(rs2) {
-                    next_pc = self.pc.wrapping_add(imm as u32);
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
                 }
             }
             Instruction::Bgeu { rs1, rs2, imm } => {
                 if self.read_reg(rs1) >= self.read_reg(rs2) {
-                    next_pc = self.pc.wrapping_add(imm as u32);
+                    next_pc = check_jump_target(pc.wrapping_add(imm as u32))?;
                 }
             }
 
-            // Loads
+            // Loads (misaligned accesses are performed, not trapped)
             Instruction::Lw { rd, rs1, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                let val = bus.read_u32(addr)?;
+                let val = bus
+                    .read_u32(addr)
+                    .map_err(|_| Exception::LoadAccessFault(addr))?;
                 self.write_reg(rd, val);
             }
             Instruction::Lh { rd, rs1, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                let val = bus.read_u16(addr)? as i16 as i32 as u32;
-                self.write_reg(rd, val);
+                let val = bus
+                    .read_u16(addr)
+                    .map_err(|_| Exception::LoadAccessFault(addr))?;
+                self.write_reg(rd, val as i16 as i32 as u32);
             }
             Instruction::Lhu { rd, rs1, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                let val = bus.read_u16(addr)? as u32;
-                self.write_reg(rd, val);
+                let val = bus
+                    .read_u16(addr)
+                    .map_err(|_| Exception::LoadAccessFault(addr))?;
+                self.write_reg(rd, val as u32);
             }
             Instruction::Lb { rd, rs1, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                let val = bus.read_u8(addr)? as i8 as i32 as u32;
-                self.write_reg(rd, val);
+                let val = bus
+                    .read_u8(addr)
+                    .map_err(|_| Exception::LoadAccessFault(addr))?;
+                self.write_reg(rd, val as i8 as i32 as u32);
             }
             Instruction::Lbu { rd, rs1, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                let val = bus.read_u8(addr)? as u32;
-                self.write_reg(rd, val);
+                let val = bus
+                    .read_u8(addr)
+                    .map_err(|_| Exception::LoadAccessFault(addr))?;
+                self.write_reg(rd, val as u32);
             }
 
             // Stores
             Instruction::Sw { rs1, rs2, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                bus.write_u32(addr, self.read_reg(rs2))?;
+                bus.write_u32(addr, self.read_reg(rs2))
+                    .map_err(|_| Exception::StoreAccessFault(addr))?;
             }
             Instruction::Sh { rs1, rs2, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                bus.write_u16(addr, self.read_reg(rs2) as u16)?;
+                bus.write_u16(addr, self.read_reg(rs2) as u16)
+                    .map_err(|_| Exception::StoreAccessFault(addr))?;
             }
             Instruction::Sb { rs1, rs2, imm } => {
                 let addr = self.read_reg(rs1).wrapping_add(imm as u32);
-                bus.write_u8(addr, self.read_reg(rs2) as u8)?;
+                bus.write_u8(addr, self.read_reg(rs2) as u8)
+                    .map_err(|_| Exception::StoreAccessFault(addr))?;
             }
 
-            // System commands
-            Instruction::Ecall => {
-                next_pc = self.trap(11); // Код 11: системный вызов
-            }
-            Instruction::Ebreak => {
-                next_pc = self.trap(3); // Код 3: точка останова (Breakpoint)
-            }
+            // System
+            Instruction::Ecall => return Err(Exception::EnvironmentCallFromM),
+            Instruction::Ebreak => return Err(Exception::Breakpoint(pc)),
             Instruction::Mret => {
-                next_pc = self.read_csr(csr::MEPC);
+                next_pc = self.csrs.mepc;
 
-                // Восстанавливаем MIE из MPIE и выставляем MPIE = 1
-                let mstatus = self.read_csr(csr::MSTATUS);
-                let mpie = (mstatus & csr::MSTATUS_MPIE) != 0;
-                let mut new_mstatus = mstatus | csr::MSTATUS_MPIE;
+                // MIE <- MPIE, MPIE <- 1, MPP <- M (least-privileged mode supported)
+                let csrs = &mut self.csrs;
+                let mpie = csrs.mstatus & csr::MSTATUS_MPIE != 0;
+                csrs.mstatus &= !csr::MSTATUS_MIE;
                 if mpie {
-                    new_mstatus |= csr::MSTATUS_MIE;
-                } else {
-                    new_mstatus &= !csr::MSTATUS_MIE;
+                    csrs.mstatus |= csr::MSTATUS_MIE;
                 }
-                self.write_csr(csr::MSTATUS, new_mstatus);
+                csrs.mstatus |= csr::MSTATUS_MPIE | csr::MSTATUS_MPP;
             }
-            Instruction::Fence => {
-                // NOP для барьера памяти
-            }
+            // Single hart, no caches: memory ordering and instruction-fetch
+            // coherence are trivially satisfied.
+            Instruction::Fence | Instruction::FenceI => {}
+            // No interrupts are delivered yet, so WFI is implemented as a NOP
+            // (explicitly permitted by the privileged spec).
+            Instruction::Wfi => {}
 
             // Custom
             Instruction::Custom { opcode, raw } => {
-                if let Some(ref mut coproc) = self.coprocessor {
-                    coproc.execute(opcode, raw, &mut self.regs, &mut next_pc, bus)?;
-                    self.regs[0] = 0;
-                } else {
-                    return Err(CpuError::IllegalInstruction(raw));
-                }
+                let Some(coproc) = self.coprocessor.as_mut() else {
+                    return Err(Exception::IllegalInstruction(raw));
+                };
+                let mut regs = self.regs;
+                let mut target = next_pc;
+                coproc.execute(opcode, raw, &mut regs, &mut target, bus)?;
+                next_pc = check_jump_target(target)?;
+                regs[0] = 0;
+                self.regs = regs;
             }
 
-            // Zicsr
+            // Zicsr. CSRRW/CSRRWI always write; CSRRS/CSRRC with rs1=x0 and
+            // the immediate forms with uimm=0 only read.
             Instruction::Csrrw { rd, rs1, csr } => {
-                let old = self.read_csr(csr);
-                self.write_csr(csr, self.read_reg(rs1));
-                self.write_reg(rd, old);
+                self.exec_csr(raw, csr, rd, CsrOp::Write, self.read_reg(rs1), true)?;
             }
             Instruction::Csrrs { rd, rs1, csr } => {
-                let old = self.read_csr(csr);
-                if rs1 != 0 {
-                    self.write_csr(csr, old | self.read_reg(rs1));
-                }
-                self.write_reg(rd, old);
+                self.exec_csr(raw, csr, rd, CsrOp::Set, self.read_reg(rs1), rs1 != 0)?;
             }
             Instruction::Csrrc { rd, rs1, csr } => {
-                let old = self.read_csr(csr);
-                if rs1 != 0 {
-                    self.write_csr(csr, old & !self.read_reg(rs1));
-                }
-                self.write_reg(rd, old);
+                self.exec_csr(raw, csr, rd, CsrOp::Clear, self.read_reg(rs1), rs1 != 0)?;
             }
             Instruction::Csrrwi { rd, uimm, csr } => {
-                let old = self.read_csr(csr);
-                self.write_csr(csr, uimm);
-                self.write_reg(rd, old);
+                self.exec_csr(raw, csr, rd, CsrOp::Write, uimm, true)?;
             }
             Instruction::Csrrsi { rd, uimm, csr } => {
-                let old = self.read_csr(csr);
-                if uimm != 0 {
-                    self.write_csr(csr, old | uimm);
-                }
-                self.write_reg(rd, old);
+                self.exec_csr(raw, csr, rd, CsrOp::Set, uimm, uimm != 0)?;
             }
             Instruction::Csrrci { rd, uimm, csr } => {
-                let old = self.read_csr(csr);
-                if uimm != 0 {
-                    self.write_csr(csr, old & !uimm);
-                }
-                self.write_reg(rd, old);
+                self.exec_csr(raw, csr, rd, CsrOp::Clear, uimm, uimm != 0)?;
             }
         }
 
-        self.pc = next_pc;
-        Ok(())
-    }
-}
-
-impl fmt::Display for CpuError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CpuError::IllegalInstruction(raw) => {
-                write!(f, "Illegal instruction: 0x{:08X}", raw)
-            }
-            CpuError::Bus(err) => write!(f, "CPU bus fault: {}", err),
-        }
-    }
-}
-
-impl std::error::Error for CpuError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CpuError::Bus(err) => Some(err),
-            _ => None,
-        }
+        Ok(next_pc)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::Bus;
+    use crate::devices::ram::Ram;
+
+    const TRAP_VECTOR: Reg = 0x1800;
 
     // Mock-сопроцессор для проверки механизма attach_coprocessor
     struct MockCoprocessor;
@@ -448,11 +469,35 @@ mod tests {
             _opcode: u8,
             _raw: u32,
             _regs: &mut [Reg; 32],
-            _pc: &mut Reg,
-            _bus: &mut dyn crate::bus::BusDevice,
-        ) -> Result<(), CpuError> {
+            _next_pc: &mut Reg,
+            _bus: &mut dyn BusDevice,
+        ) -> Result<(), Exception> {
             Ok(())
         }
+    }
+
+    // Загружает программу по адресу 0x1000 (RAM 0x1000..0x2000), mtvec = TRAP_VECTOR
+    fn setup_env(program: &[u32]) -> (Cpu, Bus) {
+        let mut bus = Bus::new();
+        let mut ram = Ram::new(4096);
+
+        for (i, &inst) in program.iter().enumerate() {
+            ram.write_u32((i * 4) as u32, inst).unwrap();
+        }
+
+        bus.map_device(0x1000, 4096, Box::new(ram)).unwrap();
+        let mut cpu = Cpu::new(0x1000);
+        cpu.write_csr(csr::MTVEC, TRAP_VECTOR).unwrap();
+        (cpu, bus)
+    }
+
+    /// Проверяет, что trap взят: возвращен ожидаемый Trap и CSR обновлены
+    fn assert_trap(cpu: &Cpu, trap: Option<Trap>, exception: Exception, epc: Reg) {
+        assert_eq!(trap, Some(Trap { exception, epc }));
+        assert_eq!(cpu.pc, TRAP_VECTOR);
+        assert_eq!(cpu.csrs.mepc, epc);
+        assert_eq!(cpu.csrs.mcause, exception.code());
+        assert_eq!(cpu.csrs.mtval, exception.tval());
     }
 
     #[test]
@@ -529,13 +574,22 @@ mod tests {
     }
 
     #[test]
-    fn test_bus_error_conversion() {
-        // Предполагается типовое перечисление BusError или его инстанс
-        // Тест проверяет реализацию трейта From<BusError> for CpuError
-        let bus_err = BusError::AddressNotFound(0x1000); // или BusError::LoadAccessFault, в зависимости от определения в bus.rs
-        let cpu_err: CpuError = bus_err.into();
-
-        assert_eq!(cpu_err, CpuError::Bus(bus_err));
+    fn test_exception_codes_and_tval() {
+        let cases = [
+            (Exception::InstructionAddressMisaligned(0x1002), 0, 0x1002),
+            (Exception::InstructionAccessFault(0x10), 1, 0x10),
+            (Exception::IllegalInstruction(0xFFFF_FFFF), 2, 0xFFFF_FFFF),
+            (Exception::Breakpoint(0x1000), 3, 0x1000),
+            (Exception::LoadAddressMisaligned(0x21), 4, 0x21),
+            (Exception::LoadAccessFault(0x20), 5, 0x20),
+            (Exception::StoreAddressMisaligned(0x31), 6, 0x31),
+            (Exception::StoreAccessFault(0x30), 7, 0x30),
+            (Exception::EnvironmentCallFromM, 11, 0),
+        ];
+        for (exception, code, tval) in cases {
+            assert_eq!(exception.code(), code);
+            assert_eq!(exception.tval(), tval);
+        }
     }
 
     #[test]
@@ -556,50 +610,19 @@ mod tests {
 
     #[test]
     fn test_cpu_executes_addi_and_add() {
-        use crate::bus::Bus;
-        use crate::devices::ram::Ram;
-
-        let mut bus = Bus::new();
-        let mut ram = Ram::new(1024);
-
-        // Запишем в память маленькую программу:
         // 1. addi x1, x0, 10  (машинный код: 0x00a00093)
         // 2. add  x2, x1, x1  (машинный код: 0x00108133) -> должно стать 20!
-        ram.write_u32(0, 0x00A0_0093).unwrap();
-        ram.write_u32(4, 0x0010_8133).unwrap();
-
-        // Подключаем RAM по адресу 0x1000
-        bus.map_device(0x1000, 1024, Box::new(ram)).unwrap();
-
-        // Стартуем процессор с адреса 0x1000
-        let mut cpu = Cpu::new(0x1000);
+        let (mut cpu, mut bus) = setup_env(&[0x00A0_0093, 0x0010_8133]);
 
         // Такт 1: исполняем addi x1, x0, 10
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(1), 10);
         assert_eq!(cpu.pc, 0x1004);
 
         // Такт 2: исполняем add x2, x1, x1
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(2), 20);
         assert_eq!(cpu.pc, 0x1008);
-    }
-
-    // Вспомогательная функция для быстрой загрузки программы в RAM и создания CPU
-    fn setup_env(program: &[u32]) -> (Cpu, crate::bus::Bus) {
-        use crate::bus::Bus;
-        use crate::devices::ram::Ram;
-
-        let mut bus = Bus::new();
-        let mut ram = Ram::new(4096);
-
-        for (i, &inst) in program.iter().enumerate() {
-            ram.write_u32((i * 4) as u32, inst).unwrap();
-        }
-
-        bus.map_device(0x1000, 4096, Box::new(ram)).unwrap();
-        let cpu = Cpu::new(0x1000);
-        (cpu, bus)
     }
 
     #[test]
@@ -625,7 +648,7 @@ mod tests {
         let (mut cpu, mut bus) = setup_env(&prog);
 
         for _ in 0..prog.len() {
-            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.step(&mut bus), None);
         }
 
         assert_eq!(cpu.read_reg(1), 0xFFFF_FFFF);
@@ -654,7 +677,7 @@ mod tests {
         cpu.write_reg(5, 8);
 
         for _ in 0..6 {
-            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.step(&mut bus), None);
         }
 
         assert_eq!(cpu.read_reg(2), 0x0000_0000); // 0xF000_0000 << 4
@@ -678,7 +701,7 @@ mod tests {
         cpu.write_reg(2, 10);
 
         for _ in 0..4 {
-            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.step(&mut bus), None);
         }
 
         assert_eq!(cpu.read_reg(3), 1);
@@ -694,10 +717,10 @@ mod tests {
             0x0000_1117, // auipc x2, 1       -> x2 = PC (0x1004) + 0x1000 = 0x2004
         ]);
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(1), 0x1234_5000);
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(2), 0x2004);
     }
 
@@ -713,18 +736,18 @@ mod tests {
         ]);
 
         // 1. Выполняем JAL
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(1), 0x1004);
         assert_eq!(cpu.pc, 0x1008);
         assert_eq!(cpu.read_reg(2), 0); // Инструкция по адресу 0x1004 не выполнялась
 
         // 2. Выполняем JALR (проверяем также сброс младшего бита адреса: 0x1004 + 1 -> 0x1004)
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(3), 0x100C);
         assert_eq!(cpu.pc, 0x1004);
 
         // 3. Выполняем ADDI по адресу 0x1004, куда вернулись через JALR
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(2), 99);
     }
 
@@ -753,23 +776,23 @@ mod tests {
         cpu.write_reg(2, 10);
 
         // BEQ (не взят)
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1004);
 
         // BNE (взят)
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x100C);
 
         // BLT (взят)
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1014);
 
         // BGEU (взят)
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x101C);
 
         // Финальный ADDI
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(3), 0); // Ни один из пропущенных ADDI не сработал
         assert_eq!(cpu.read_reg(4), 42);
     }
@@ -794,7 +817,7 @@ mod tests {
         cpu.write_reg(2, 0xDEAD_FF80);
 
         for _ in 0..8 {
-            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.step(&mut bus), None);
         }
 
         assert_eq!(cpu.read_reg(3), 0xDEAD_FF80); // lw
@@ -805,34 +828,68 @@ mod tests {
     }
 
     #[test]
-    fn test_illegal_instruction_error() {
+    fn test_illegal_instruction_traps() {
         // 0xFFFF_FFFF не является валидной инструкцией RV32I
         let (mut cpu, mut bus) = setup_env(&[0xFFFF_FFFF]);
 
-        let res = cpu.step(&mut bus);
-        assert_eq!(res, Err(CpuError::IllegalInstruction(0xFFFF_FFFF)));
-        assert_eq!(cpu.pc, 0x1000); // PC не должен измениться при ошибке
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::IllegalInstruction(0xFFFF_FFFF),
+            0x1000,
+        );
     }
 
     #[test]
-    fn test_instruction_fetch_bus_error() {
-        let (_, mut bus) = setup_env(&[]);
+    fn test_instruction_fetch_fault_traps() {
+        let (mut cpu, mut bus) = setup_env(&[]);
         // Ставим PC в неразмеченную область памяти
-        let mut cpu = Cpu::new(0x9000_0000);
+        cpu.pc = 0x9000_0000;
 
-        let res = cpu.step(&mut bus);
-        assert!(matches!(res, Err(CpuError::Bus(_))));
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::InstructionAccessFault(0x9000_0000),
+            0x9000_0000,
+        );
     }
 
     #[test]
-    fn test_custom_instruction_without_coprocessor_fails() {
+    fn test_misaligned_pc_traps_on_fetch() {
+        let (mut cpu, mut bus) = setup_env(&[0x0000_0013; 4]);
+        cpu.pc = 0x1002;
+
+        let trap = cpu.step(&mut bus);
+        let exception = Exception::InstructionAddressMisaligned(0x1002);
+        assert_eq!(
+            trap,
+            Some(Trap {
+                exception,
+                epc: 0x1002
+            })
+        );
+        assert_eq!(cpu.pc, TRAP_VECTOR);
+        assert_eq!(cpu.csrs.mcause, 0);
+        assert_eq!(cpu.csrs.mtval, 0x1002);
+        // mepc[1:0] всегда нулевые при IALIGN=32
+        assert_eq!(cpu.csrs.mepc, 0x1000);
+    }
+
+    #[test]
+    fn test_custom_instruction_without_coprocessor_traps() {
         // Opcode 0x0B (0001011) — стандартный слот custom-0 в RISC-V
         let raw_custom = 0x0000_000B;
         let (mut cpu, mut bus) = setup_env(&[raw_custom]);
 
-        let res = cpu.step(&mut bus);
-        assert_eq!(res, Err(CpuError::IllegalInstruction(raw_custom)));
-        assert_eq!(cpu.pc, 0x1000); // При ошибке PC остается на месте
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::IllegalInstruction(raw_custom),
+            0x1000,
+        );
     }
 
     #[test]
@@ -846,8 +903,8 @@ mod tests {
                 _raw: u32,
                 regs: &mut [Reg; 32],
                 next_pc: &mut Reg,
-                _bus: &mut dyn crate::bus::BusDevice,
-            ) -> Result<(), CpuError> {
+                _bus: &mut dyn BusDevice,
+            ) -> Result<(), Exception> {
                 assert_eq!(opcode, 0x0B);
                 regs[0] = 0xDEAD_BEEF; // Пытаемся перезаписать x0 напрямую через массив
                 regs[1] = 0xCAFE_BABE; // Записываем результат в x1
@@ -860,13 +917,47 @@ mod tests {
         let (mut cpu, mut bus) = setup_env(&[raw_custom]);
         cpu.attach_coprocessor(Box::new(DirtyCoproc));
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
 
         // Проверяем, что CPU принудительно сбросил regs[0] обратно в 0 после вызова сопроцессора
         assert_eq!(cpu.read_reg(0), 0);
         assert_eq!(cpu.regs[0], 0);
         assert_eq!(cpu.read_reg(1), 0xCAFE_BABE);
         assert_eq!(cpu.pc, 0x1010);
+    }
+
+    #[test]
+    fn test_coprocessor_exception_is_atomic() {
+        // Сопроцессор портит регистры и затем падает: изменения не должны примениться
+        struct FailingCoproc;
+        impl Coprocessor for FailingCoproc {
+            fn execute(
+                &mut self,
+                _opcode: u8,
+                raw: u32,
+                regs: &mut [Reg; 32],
+                next_pc: &mut Reg,
+                _bus: &mut dyn BusDevice,
+            ) -> Result<(), Exception> {
+                regs[5] = 0xBAD;
+                *next_pc = 0x1F00;
+                Err(Exception::IllegalInstruction(raw))
+            }
+        }
+
+        let raw_custom = 0x0000_002B;
+        let (mut cpu, mut bus) = setup_env(&[raw_custom]);
+        cpu.attach_coprocessor(Box::new(FailingCoproc));
+        cpu.write_reg(5, 7);
+
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::IllegalInstruction(raw_custom),
+            0x1000,
+        );
+        assert_eq!(cpu.read_reg(5), 7);
     }
 
     #[test]
@@ -889,16 +980,16 @@ mod tests {
         cpu.write_reg(1, (-5i32) as u32);
         cpu.write_reg(2, 10);
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1008); // BGE сработал на равенстве отрицательных чисел
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1010); // BLTU сработал
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1014); // BGE не сработал
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.read_reg(3), 0);
         assert_eq!(cpu.read_reg(4), 77);
     }
@@ -914,12 +1005,66 @@ mod tests {
 
         cpu.write_reg(1, 0x1020);
 
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
         assert_eq!(cpu.pc, 0x1020, "PC должен прыгнуть по старому значению x1");
         assert_eq!(
             cpu.read_reg(1),
             0x1004,
             "В x1 должен сохраниться адрес возврата"
+        );
+    }
+
+    #[test]
+    fn test_misaligned_jalr_traps_without_writing_rd() {
+        // jalr x1, x2, 2 -> цель 0x1102 не выровнена по 4 байтам
+        let (mut cpu, mut bus) = setup_env(&[0x0021_00E7]);
+        cpu.write_reg(2, 0x1100);
+
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::InstructionAddressMisaligned(0x1102),
+            0x1000,
+        );
+        assert_eq!(
+            cpu.read_reg(1),
+            0,
+            "rd не должен записываться при исключении"
+        );
+    }
+
+    #[test]
+    fn test_misaligned_jal_traps_without_writing_rd() {
+        // jal x1, 6 -> цель 0x1006
+        let (mut cpu, mut bus) = setup_env(&[0x0060_00EF]);
+
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::InstructionAddressMisaligned(0x1006),
+            0x1000,
+        );
+        assert_eq!(cpu.read_reg(1), 0);
+    }
+
+    #[test]
+    fn test_misaligned_branch_traps_only_when_taken() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0x0000_9363, // bne x1, x0, 6 (не взят: x1 == 0) -> без исключения
+            0x0000_0363, // beq x0, x0, 6 (взят) -> цель 0x100A
+        ]);
+
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.pc, 0x1004);
+
+        let trap = cpu.step(&mut bus);
+        assert_trap(
+            &cpu,
+            trap,
+            Exception::InstructionAddressMisaligned(0x100A),
+            0x1004,
         );
     }
 
@@ -935,8 +1080,8 @@ mod tests {
         cpu.write_reg(1, 0b1010);
         cpu.write_reg(2, 33); // 33 & 0x1F == 1
 
-        cpu.step(&mut bus).unwrap();
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.step(&mut bus), None);
 
         assert_eq!(cpu.read_reg(3), 0b10100); // 10 << 1 = 20
         assert_eq!(cpu.read_reg(4), 0b0101); // 10 >> 1 = 5
@@ -953,7 +1098,7 @@ mod tests {
 
         // 3 итерации цикла (по 2 инструкции в каждой = 6 шагов)
         for _ in 0..6 {
-            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.step(&mut bus), None);
         }
 
         assert_eq!(cpu.read_reg(1), 0);
@@ -970,14 +1115,14 @@ mod tests {
         cpu.write_reg(1, 0x1100);
         cpu.write_reg(2, 0x1234_5678);
 
-        cpu.step(&mut bus).unwrap();
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.step(&mut bus), None);
 
         assert_eq!(cpu.read_reg(3), 0x1234_5678);
     }
 
     #[test]
-    fn test_load_and_store_bus_fault_leaves_pc_unchanged() {
+    fn test_load_and_store_access_faults_trap() {
         let (mut cpu, mut bus) = setup_env(&[
             0x0000_A183, // lw x3, 0(x1)
             0x0020_A023, // sw x2, 0(x1)
@@ -985,23 +1130,19 @@ mod tests {
 
         // Указываем адрес за пределами размеченной RAM (0x1000..0x2000)
         cpu.write_reg(1, 0x5000_0000);
+        cpu.write_reg(3, 0x77);
 
-        // Ошибка чтения по шине при выполнении LW
-        let res_load = cpu.step(&mut bus);
-        assert!(matches!(res_load, Err(CpuError::Bus(_))));
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::LoadAccessFault(0x5000_0000), 0x1000);
         assert_eq!(
-            cpu.pc, 0x1000,
-            "PC не должен меняться при ошибке памяти на Load"
+            cpu.read_reg(3),
+            0x77,
+            "rd не должен меняться при ошибке загрузки"
         );
 
-        // Передвигаем PC вручную на SW и проверяем ошибку записи
         cpu.pc = 0x1004;
-        let res_store = cpu.step(&mut bus);
-        assert!(matches!(res_store, Err(CpuError::Bus(_))));
-        assert_eq!(
-            cpu.pc, 0x1004,
-            "PC не должен меняться при ошибке памяти на Store"
-        );
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::StoreAccessFault(0x5000_0000), 0x1004);
     }
 
     #[test]
@@ -1016,26 +1157,57 @@ mod tests {
         cpu.write_reg(2, 1);
         cpu.write_reg(4, 0);
 
-        cpu.step(&mut bus).unwrap();
-        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.step(&mut bus), None);
 
         assert_eq!(cpu.read_reg(3), 0);
         assert_eq!(cpu.read_reg(4), u32::MAX);
     }
 
     #[test]
-    fn test_fence_acts_as_nop() {
+    fn test_division_edge_cases() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0x0220_C1B3, // div  x3, x1, x2
+            0x0220_D233, // divu x4, x1, x2
+            0x0220_E2B3, // rem  x5, x1, x2
+            0x0220_F333, // remu x6, x1, x2
+        ]);
+
+        // Деление на ноль
+        cpu.write_reg(1, 7);
+        cpu.write_reg(2, 0);
+        for _ in 0..4 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        assert_eq!(cpu.read_reg(3), u32::MAX);
+        assert_eq!(cpu.read_reg(4), u32::MAX);
+        assert_eq!(cpu.read_reg(5), 7);
+        assert_eq!(cpu.read_reg(6), 7);
+
+        // Переполнение: MIN / -1
+        cpu.pc = 0x1000;
+        cpu.write_reg(1, i32::MIN as u32);
+        cpu.write_reg(2, -1i32 as u32);
+        assert_eq!(cpu.step(&mut bus), None);
+        cpu.pc = 0x1008;
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.read_reg(3), i32::MIN as u32);
+        assert_eq!(cpu.read_reg(5), 0);
+    }
+
+    #[test]
+    fn test_fence_fence_i_and_wfi_act_as_nop() {
         let (mut cpu, mut bus) = setup_env(&[
             0x0000_000F, // fence
+            0x0000_100F, // fence.i
+            0x1050_0073, // wfi
             0x02A0_0093, // addi x1, x0, 42
         ]);
 
-        // FENCE просто сдвигает PC на 4
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.pc, 0x1004);
-
-        // addi
-        cpu.step(&mut bus).unwrap();
+        for _ in 0..4 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        assert_eq!(cpu.pc, 0x1010);
         assert_eq!(cpu.read_reg(1), 42);
     }
 
@@ -1045,21 +1217,17 @@ mod tests {
             0x0010_0073, // ebreak
         ]);
 
-        // Настраиваем вектор прерываний и включаем прерывания (MIE = 1)
-        cpu.write_csr(csr::MTVEC, 0x8000_0000);
-        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MIE);
+        // Включаем прерывания (MIE = 1)
+        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MIE).unwrap();
 
-        cpu.step(&mut bus).unwrap();
-
-        // Проверяем аппаратный переход и сохранение контекста
-        assert_eq!(cpu.pc, 0x8000_0000);
-        assert_eq!(cpu.read_csr(csr::MEPC), 0x1000);
-        assert_eq!(cpu.read_csr(csr::MCAUSE), 3); // mcause = 3 (Breakpoint)
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::Breakpoint(0x1000), 0x1000);
 
         // Проверяем аппаратный стек: MIE отключился, а MPIE стал 1
-        let mstatus = cpu.read_csr(csr::MSTATUS);
+        let mstatus = cpu.read_csr(csr::MSTATUS).unwrap();
         assert_eq!(mstatus & csr::MSTATUS_MIE, 0);
         assert_ne!(mstatus & csr::MSTATUS_MPIE, 0);
+        assert_eq!(mstatus & csr::MSTATUS_MPP, csr::MSTATUS_MPP);
     }
 
     #[test]
@@ -1068,14 +1236,84 @@ mod tests {
             0x0000_0073, // ecall
         ]);
 
-        // Настраиваем адрес вектора прерываний
-        cpu.write_csr(csr::MTVEC, 0x8000_0000);
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::EnvironmentCallFromM, 0x1000);
+        assert_eq!(cpu.csrs.mcause, 11); // Environment call from M-mode
+    }
 
-        cpu.step(&mut bus).unwrap();
+    #[test]
+    fn test_vectored_mtvec_uses_base_for_exceptions() {
+        let (mut cpu, mut bus) = setup_env(&[0x0000_0073]); // ecall
+        cpu.write_csr(csr::MTVEC, TRAP_VECTOR | 1).unwrap();
 
-        // Проверяем аппаратный переход и сохранение контекста
-        assert_eq!(cpu.pc, 0x8000_0000);
-        assert_eq!(cpu.read_csr(csr::MEPC), 0x1000);
-        assert_eq!(cpu.read_csr(csr::MCAUSE), 11); // Environment call from M-mode
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::EnvironmentCallFromM, 0x1000);
+    }
+
+    #[test]
+    fn test_mret_restores_interrupt_enable() {
+        let (mut cpu, mut bus) = setup_env(&[0x3020_0073]); // mret
+        cpu.write_csr(csr::MSTATUS, csr::MSTATUS_MPIE).unwrap();
+        cpu.write_csr(csr::MEPC, 0x1100).unwrap();
+
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.pc, 0x1100);
+        let mstatus = cpu.read_csr(csr::MSTATUS).unwrap();
+        assert_ne!(mstatus & csr::MSTATUS_MIE, 0, "MIE <- MPIE");
+        assert_ne!(mstatus & csr::MSTATUS_MPIE, 0, "MPIE <- 1");
+    }
+
+    #[test]
+    fn test_csr_instructions() {
+        let (mut cpu, mut bus) = setup_env(&[
+            0x3400_9173, // csrrw  x2, mscratch, x1
+            0x3401_61F3, // csrrsi x3, mscratch, 2
+            0x3400_F273, // csrrci x4, mscratch, 1
+            0x3400_22F3, // csrr   x5, mscratch (csrrs x5, mscratch, x0)
+        ]);
+        cpu.write_reg(1, 0x0000_0005);
+        cpu.write_csr(csr::MSCRATCH, 0xAA).unwrap();
+
+        for _ in 0..4 {
+            assert_eq!(cpu.step(&mut bus), None);
+        }
+        assert_eq!(cpu.read_reg(2), 0xAA); // старое значение
+        assert_eq!(cpu.read_reg(3), 0x5);
+        assert_eq!(cpu.read_reg(4), 0x7);
+        assert_eq!(cpu.read_reg(5), 0x6);
+    }
+
+    #[test]
+    fn test_unimplemented_csr_traps_as_illegal() {
+        let raw = 0x1800_20F3; // csrr x1, satp
+        let (mut cpu, mut bus) = setup_env(&[raw]);
+        cpu.write_reg(1, 0x55);
+
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::IllegalInstruction(raw), 0x1000);
+        assert_eq!(
+            cpu.read_reg(1),
+            0x55,
+            "rd не должен меняться при исключении"
+        );
+    }
+
+    #[test]
+    fn test_read_only_csr_read_ok_write_traps() {
+        let read = 0xF140_20F3; // csrr x1, mhartid
+        let set_x0 = 0xF140_A0F3; // csrrs x1, mhartid, x1 (запись, даже если x1 == 0)
+        let write = 0xF140_9173; // csrrw x2, mhartid, x1
+        let (mut cpu, mut bus) = setup_env(&[read, set_x0, write]);
+        cpu.write_reg(1, 0x99);
+
+        assert_eq!(cpu.step(&mut bus), None);
+        assert_eq!(cpu.read_reg(1), 0);
+
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::IllegalInstruction(set_x0), 0x1004);
+
+        cpu.pc = 0x1008;
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::IllegalInstruction(write), 0x1008);
     }
 }

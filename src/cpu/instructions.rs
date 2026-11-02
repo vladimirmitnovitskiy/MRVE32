@@ -65,7 +65,9 @@ pub enum Instruction {
     Ebreak,
     Custom { opcode: u8, raw: u32 },
     Fence,
+    FenceI,
     Mret,
+    Wfi,
     // Zicsr
     Csrrw { rd: usize, rs1: usize, csr: u16 },
     Csrrs { rd: usize, rs1: usize, csr: u16 },

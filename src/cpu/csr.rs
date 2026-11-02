@@ -1,9 +1,20 @@
+use std::fmt;
+
 use crate::types::Reg;
+
+// Machine Information Registers (read-only)
+pub const MVENDORID: u16 = 0xF11;
+pub const MARCHID: u16 = 0xF12;
+pub const MIMPID: u16 = 0xF13;
+pub const MHARTID: u16 = 0xF14;
+pub const MCONFIGPTR: u16 = 0xF15;
 
 // Machine Trap Setup
 pub const MSTATUS: u16 = 0x300; // Machine status register
+pub const MISA: u16 = 0x301; // ISA and extensions
 pub const MIE: u16 = 0x304; // Machine interrupt enable
 pub const MTVEC: u16 = 0x305; // Machine trap-handler base address
+pub const MSTATUSH: u16 = 0x310; // Upper half of mstatus (RV32 only)
 
 // Machine Trap Handling
 pub const MSCRATCH: u16 = 0x340; // Scratch register for trap handlers
@@ -11,13 +22,49 @@ pub const MEPC: u16 = 0x341; // Machine exception program counter
 pub const MCAUSE: u16 = 0x342; // Machine trap cause
 pub const MTVAL: u16 = 0x343; // Machine bad address or instruction
 pub const MIP: u16 = 0x344; // Machine interrupt pending
+
 pub const MSTATUS_MIE: Reg = 1 << 3; // Machine Interrupt Enable
 pub const MSTATUS_MPIE: Reg = 1 << 7; // Machine Previous Interrupt Enable
+pub const MSTATUS_MPP: Reg = 0b11 << 11; // Machine Previous Privilege (hardwired to M)
 
-// Machine Information
-pub const MHARTID: u16 = 0xF14;
+pub const MIP_MSIP: Reg = 1 << 3; // Machine software interrupt
+pub const MIP_MTIP: Reg = 1 << 7; // Machine timer interrupt
+pub const MIP_MEIP: Reg = 1 << 11; // Machine external interrupt
 
-#[derive(Debug, Clone, Copy, Default)]
+/// `misa`: MXL=1 (XLEN=32), extensions I and M.
+pub const MISA_VALUE: Reg = (1 << 30) | (1 << (b'I' - b'A')) | (1 << (b'M' - b'A'));
+
+const MSTATUS_WRITABLE: Reg = MSTATUS_MIE | MSTATUS_MPIE;
+const MIE_WRITABLE: Reg = MIP_MSIP | MIP_MTIP | MIP_MEIP;
+
+/// Why a CSR access was rejected. Executed by an instruction, either case
+/// raises an illegal-instruction exception.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsrError {
+    /// The CSR does not exist on this hart.
+    Unimplemented(u16),
+    /// The CSR is read-only (address bits `[11:10] == 0b11`).
+    ReadOnly(u16),
+}
+
+impl fmt::Display for CsrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CsrError::Unimplemented(csr) => write!(f, "CSR 0x{csr:03X} is not implemented"),
+            CsrError::ReadOnly(csr) => write!(f, "CSR 0x{csr:03X} is read-only"),
+        }
+    }
+}
+
+impl std::error::Error for CsrError {}
+
+/// Machine-mode CSRs.
+///
+/// [`CsrFile::read`]/[`CsrFile::write`] implement software-visible access
+/// (WARL masking, read-only checks). The public fields hold the raw
+/// architectural state and may be set directly by the platform, e.g. to
+/// drive pending bits in `mip`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CsrFile {
     pub mstatus: Reg,
     pub mie: Reg,
@@ -29,37 +76,130 @@ pub struct CsrFile {
     pub mip: Reg,
 }
 
+impl Default for CsrFile {
+    fn default() -> Self {
+        Self {
+            mstatus: MSTATUS_MPP,
+            mie: 0,
+            mtvec: 0,
+            mscratch: 0,
+            mepc: 0,
+            mcause: 0,
+            mtval: 0,
+            mip: 0,
+        }
+    }
+}
+
 impl CsrFile {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn read(&self, csr: u16) -> Reg {
-        match csr {
+    /// Whether the CSR address encodes a read-only register.
+    pub fn is_read_only(csr: u16) -> bool {
+        (csr >> 10) & 0b11 == 0b11
+    }
+
+    pub fn read(&self, csr: u16) -> Result<Reg, CsrError> {
+        Ok(match csr {
             MSTATUS => self.mstatus,
+            MISA => MISA_VALUE,
             MIE => self.mie,
             MTVEC => self.mtvec,
+            MSTATUSH => 0,
             MSCRATCH => self.mscratch,
             MEPC => self.mepc,
             MCAUSE => self.mcause,
             MTVAL => self.mtval,
             MIP => self.mip,
-            MHARTID => 0, // hart id = 0
-            _ => 0,       // чтение неподдерживаемых CSR возвращает 0
+            MVENDORID | MARCHID | MIMPID | MHARTID | MCONFIGPTR => 0,
+            _ => return Err(CsrError::Unimplemented(csr)),
+        })
+    }
+
+    pub fn write(&mut self, csr: u16, val: Reg) -> Result<(), CsrError> {
+        self.read(csr)?;
+        if Self::is_read_only(csr) {
+            return Err(CsrError::ReadOnly(csr));
+        }
+        match csr {
+            // Only MIE/MPIE are writable; MPP is hardwired to M (no U/S modes).
+            MSTATUS => self.mstatus = (val & MSTATUS_WRITABLE) | MSTATUS_MPP,
+            MIE => self.mie = val & MIE_WRITABLE,
+            // MODE is WARL: 0 = direct, 1 = vectored; reserved values map onto these.
+            MTVEC => self.mtvec = val & !0b10,
+            MSCRATCH => self.mscratch = val,
+            // IALIGN=32: mepc[1:0] are always zero.
+            MEPC => self.mepc = val & !0b11,
+            MCAUSE => self.mcause = val,
+            MTVAL => self.mtval = val,
+            // misa and mstatush are fixed; MSIP/MTIP/MEIP in mip are driven by
+            // the platform, not by software.
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unimplemented_csr_is_rejected() {
+        let mut csrs = CsrFile::new();
+        // satp, medeleg, pmpcfg0 do not exist on an M-only hart
+        for csr in [0x180, 0x302, 0x3A0] {
+            assert_eq!(csrs.read(csr), Err(CsrError::Unimplemented(csr)));
+            assert_eq!(csrs.write(csr, 0), Err(CsrError::Unimplemented(csr)));
         }
     }
 
-    pub fn write(&mut self, csr: u16, val: Reg) {
-        match csr {
-            MSTATUS => self.mstatus = val,
-            MIE => self.mie = val,
-            MTVEC => self.mtvec = val,
-            MSCRATCH => self.mscratch = val,
-            MEPC => self.mepc = val,
-            MCAUSE => self.mcause = val,
-            MTVAL => self.mtval = val,
-            MIP => self.mip = val,
-            _ => {} // запись в неподдерживаемые CSR (satp, pmpcfg и др.) безопасно игнорируется
+    #[test]
+    fn test_read_only_csrs() {
+        let mut csrs = CsrFile::new();
+        for csr in [MVENDORID, MARCHID, MIMPID, MHARTID, MCONFIGPTR] {
+            assert_eq!(csrs.read(csr), Ok(0));
+            assert_eq!(csrs.write(csr, 1), Err(CsrError::ReadOnly(csr)));
         }
+    }
+
+    #[test]
+    fn test_misa_reports_rv32im_and_ignores_writes() {
+        let mut csrs = CsrFile::new();
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1100));
+        assert_eq!(csrs.write(MISA, 0), Ok(()));
+        assert_eq!(csrs.read(MISA), Ok(0x4000_1100));
+    }
+
+    #[test]
+    fn test_warl_masks() {
+        let mut csrs = CsrFile::new();
+
+        csrs.write(MSTATUS, 0xFFFF_FFFF).unwrap();
+        assert_eq!(
+            csrs.read(MSTATUS),
+            Ok(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP)
+        );
+        csrs.write(MSTATUS, 0).unwrap();
+        assert_eq!(csrs.read(MSTATUS), Ok(MSTATUS_MPP));
+
+        csrs.write(MEPC, 0x1003).unwrap();
+        assert_eq!(csrs.read(MEPC), Ok(0x1000));
+
+        csrs.write(MTVEC, 0x2001).unwrap();
+        assert_eq!(csrs.read(MTVEC), Ok(0x2001)); // vectored
+        csrs.write(MTVEC, 0x2002).unwrap();
+        assert_eq!(csrs.read(MTVEC), Ok(0x2000)); // reserved mode -> direct
+
+        csrs.write(MIE, 0xFFFF_FFFF).unwrap();
+        assert_eq!(csrs.read(MIE), Ok(MIP_MSIP | MIP_MTIP | MIP_MEIP));
+
+        csrs.write(MIP, 0xFFFF_FFFF).unwrap();
+        assert_eq!(csrs.read(MIP), Ok(0));
+
+        csrs.write(MSTATUSH, 0xFFFF_FFFF).unwrap();
+        assert_eq!(csrs.read(MSTATUSH), Ok(0));
     }
 }

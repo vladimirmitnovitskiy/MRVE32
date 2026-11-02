@@ -1,6 +1,6 @@
-use crate::cpu::{CpuError, instructions::Instruction};
+use crate::cpu::{Exception, instructions::Instruction};
 
-pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
+pub fn decode(raw: u32) -> Result<Instruction, Exception> {
     let opcode = (raw & 0x7F) as u8;
     let rd = ((raw >> 7) & 0x1F) as usize;
     let funct3 = ((raw >> 12) & 0x07) as u8;
@@ -43,7 +43,7 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
             (0x6, 0x01) => Ok(Instruction::Rem { rd, rs1, rs2 }),
             (0x7, 0x01) => Ok(Instruction::Remu { rd, rs1, rs2 }),
 
-            _ => Err(CpuError::IllegalInstruction(raw)),
+            _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x13 => match funct3 {
             0x0 => Ok(Instruction::Addi { rd, rs1, imm }),
@@ -57,17 +57,17 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
                 if funct7 == 0x00 {
                     Ok(Instruction::Slli { rd, rs1, imm })
                 } else {
-                    Err(CpuError::IllegalInstruction(raw))
+                    Err(Exception::IllegalInstruction(raw))
                 }
             }
 
             0x5 => match funct7 {
                 0x00 => Ok(Instruction::Srli { rd, rs1, imm }),
                 0x20 => Ok(Instruction::Srai { rd, rs1, imm }),
-                _ => Err(CpuError::IllegalInstruction(raw)),
+                _ => Err(Exception::IllegalInstruction(raw)),
             },
 
-            _ => Err(CpuError::IllegalInstruction(raw)),
+            _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x03 => match funct3 {
             0x0 => Ok(Instruction::Lb { rd, rs1, imm }),
@@ -75,11 +75,11 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
             0x2 => Ok(Instruction::Lw { rd, rs1, imm }),
             0x4 => Ok(Instruction::Lbu { rd, rs1, imm }),
             0x5 => Ok(Instruction::Lhu { rd, rs1, imm }),
-            _ => Err(CpuError::IllegalInstruction(raw)),
+            _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x67 => match funct3 {
             0x0 => Ok(Instruction::Jalr { rd, rs1, imm }),
-            _ => Err(CpuError::IllegalInstruction(raw)),
+            _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x0B | 0x2B => Ok(Instruction::Custom { opcode, raw }),
         0x23 => match funct3 {
@@ -98,7 +98,7 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
                 rs2,
                 imm: imm_s,
             }),
-            _ => Err(CpuError::IllegalInstruction(raw)),
+            _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x63 => match funct3 {
             0x0 => Ok(Instruction::Beq {
@@ -131,7 +131,7 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
                 rs2,
                 imm: imm_b,
             }),
-            _ => Err(CpuError::IllegalInstruction(raw)),
+            _ => Err(Exception::IllegalInstruction(raw)),
         },
         0x6F => Ok(Instruction::Jal { rd, imm: imm_j }),
         0x37 => Ok(Instruction::Lui { rd, imm: imm_u }),
@@ -145,7 +145,8 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
                     0x0000_0073 => Ok(Instruction::Ecall),
                     0x0010_0073 => Ok(Instruction::Ebreak),
                     0x3020_0073 => Ok(Instruction::Mret),
-                    _ => Err(CpuError::IllegalInstruction(raw)),
+                    0x1050_0073 => Ok(Instruction::Wfi),
+                    _ => Err(Exception::IllegalInstruction(raw)),
                 },
                 0x1 => Ok(Instruction::Csrrw { rd, rs1, csr }),
                 0x2 => Ok(Instruction::Csrrs { rd, rs1, csr }),
@@ -153,11 +154,15 @@ pub fn decode(raw: u32) -> Result<Instruction, CpuError> {
                 0x5 => Ok(Instruction::Csrrwi { rd, uimm, csr }),
                 0x6 => Ok(Instruction::Csrrsi { rd, uimm, csr }),
                 0x7 => Ok(Instruction::Csrrci { rd, uimm, csr }),
-                _ => Err(CpuError::IllegalInstruction(raw)),
+                _ => Err(Exception::IllegalInstruction(raw)),
             }
         }
-        0x0F => Ok(Instruction::Fence),
-        _ => Err(CpuError::IllegalInstruction(raw)),
+        0x0F => match funct3 {
+            0x0 => Ok(Instruction::Fence),
+            0x1 => Ok(Instruction::FenceI),
+            _ => Err(Exception::IllegalInstruction(raw)),
+        },
+        _ => Err(Exception::IllegalInstruction(raw)),
     }
 }
 
@@ -386,28 +391,28 @@ mod tests {
         let raw_invalid = 0x0000_007F;
         assert_eq!(
             decode(raw_invalid),
-            Err(CpuError::IllegalInstruction(raw_invalid))
+            Err(Exception::IllegalInstruction(raw_invalid))
         );
 
         let raw_zero = 0x0000_0000;
         assert_eq!(
             decode(raw_zero),
-            Err(CpuError::IllegalInstruction(raw_zero))
+            Err(Exception::IllegalInstruction(raw_zero))
         );
     }
 
     #[test]
     fn test_illegal_funct3_funct7_combinations() {
-        let invalid_funct7 = encode_r_type(OPCODE_R_TYPE, 1, 0x0, 2, 3, 0x01);
+        let invalid_funct7 = encode_r_type(OPCODE_R_TYPE, 1, 0x0, 2, 3, 0x02);
         assert_eq!(
             decode(invalid_funct7),
-            Err(CpuError::IllegalInstruction(invalid_funct7))
+            Err(Exception::IllegalInstruction(invalid_funct7))
         );
 
         let invalid_sll = encode_r_type(OPCODE_R_TYPE, 1, 0x1, 2, 3, 0x20);
         assert_eq!(
             decode(invalid_sll),
-            Err(CpuError::IllegalInstruction(invalid_sll))
+            Err(Exception::IllegalInstruction(invalid_sll))
         );
     }
 
@@ -522,14 +527,14 @@ mod tests {
         let invalid_slli = encode_r_type(OPCODE_I_ALU, 2, 0x1, 3, 4, 0x20);
         assert_eq!(
             decode(invalid_slli),
-            Err(CpuError::IllegalInstruction(invalid_slli))
+            Err(Exception::IllegalInstruction(invalid_slli))
         );
 
         // Невалидный funct7 для srli/srai
         let invalid_shift = encode_r_type(OPCODE_I_ALU, 2, 0x5, 3, 4, 0x01);
         assert_eq!(
             decode(invalid_shift),
-            Err(CpuError::IllegalInstruction(invalid_shift))
+            Err(Exception::IllegalInstruction(invalid_shift))
         );
     }
 
@@ -589,7 +594,7 @@ mod tests {
         let invalid_load = encode_i_type(OPCODE_LOAD, 4, 0x3, 5, 0);
         assert_eq!(
             decode(invalid_load),
-            Err(CpuError::IllegalInstruction(invalid_load))
+            Err(Exception::IllegalInstruction(invalid_load))
         );
     }
 
@@ -608,7 +613,7 @@ mod tests {
         let invalid_jalr = encode_i_type(OPCODE_JALR, 1, 0x1, 2, 100);
         assert_eq!(
             decode(invalid_jalr),
-            Err(CpuError::IllegalInstruction(invalid_jalr))
+            Err(Exception::IllegalInstruction(invalid_jalr))
         );
     }
 
@@ -651,7 +656,7 @@ mod tests {
         let invalid_store = encode_s_type(OPCODE_STORE, 0x3, 8, 9, 16);
         assert_eq!(
             decode(invalid_store),
-            Err(CpuError::IllegalInstruction(invalid_store))
+            Err(Exception::IllegalInstruction(invalid_store))
         );
     }
 
@@ -730,7 +735,7 @@ mod tests {
         let invalid_branch = encode_b_type(OPCODE_BRANCH, 0x2, 10, 11, 8);
         assert_eq!(
             decode(invalid_branch),
-            Err(CpuError::IllegalInstruction(invalid_branch))
+            Err(Exception::IllegalInstruction(invalid_branch))
         );
     }
 
@@ -779,8 +784,30 @@ mod tests {
         let invalid_sys = 0x0020_0073;
         assert_eq!(
             decode(invalid_sys),
-            Err(CpuError::IllegalInstruction(invalid_sys))
+            Err(Exception::IllegalInstruction(invalid_sys))
         );
+    }
+
+    #[test]
+    fn test_decode_mret_wfi_and_fences() {
+        assert_eq!(decode(0x3020_0073), Ok(Instruction::Mret));
+        assert_eq!(decode(0x1050_0073), Ok(Instruction::Wfi));
+        assert_eq!(decode(0x0FF0_000F), Ok(Instruction::Fence)); // fence iorw, iorw
+        assert_eq!(decode(0x0000_100F), Ok(Instruction::FenceI));
+
+        // MISC-MEM with funct3 other than FENCE/FENCE.I is illegal
+        let invalid_fence = 0x0000_200F;
+        assert_eq!(
+            decode(invalid_fence),
+            Err(Exception::IllegalInstruction(invalid_fence))
+        );
+    }
+
+    #[test]
+    fn test_decode_shift_with_shamt5_is_illegal_on_rv32() {
+        // slli x1, x1, 32 (imm[5] set) is reserved on RV32
+        let raw = encode_i_type(OPCODE_I_ALU, 1, 0x1, 1, 32);
+        assert_eq!(decode(raw), Err(Exception::IllegalInstruction(raw)));
     }
 
     #[test]
