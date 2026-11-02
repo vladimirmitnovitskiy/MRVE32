@@ -533,6 +533,11 @@ impl Cpu {
                     return Err(Exception::StoreAddressMisaligned(addr));
                 }
                 let success = self.reservation == Some(addr);
+                // A failing SC does not access memory, but still faults
+                // where a store would (norm:sc_retire_permission).
+                if !success && !bus.is_mapped(addr) {
+                    return Err(Exception::StoreAccessFault(addr));
+                }
                 if success {
                     bus.write_u32(addr, self.read_reg(rs2))
                         .map_err(|_| Exception::StoreAccessFault(addr))?;
@@ -1195,6 +1200,26 @@ mod tests {
         let trap = cpu.step(&mut bus);
         assert_trap(&cpu, trap, Exception::StoreAccessFault(0x9000_0000), 0x1000);
         assert_eq!(cpu.read_reg(10), 0xAA, "rd untouched on a fault");
+    }
+
+    #[test]
+    fn test_sc_without_reservation_faults_on_unmapped_address() {
+        // sc.w a2, a3, (a4): no reservation, so it would fail, but the
+        // address is inaccessible, so it faults like a store instead.
+        let (mut cpu, mut bus) = setup_env(&[0x18D7_262F]);
+        cpu.write_reg(12, 0xBAD);
+        cpu.write_reg(14, 0x9000_0000); // unmapped
+        let trap = cpu.step(&mut bus);
+        assert_trap(&cpu, trap, Exception::StoreAccessFault(0x9000_0000), 0x1000);
+        assert_eq!(cpu.read_reg(12), 0xBAD, "rd untouched on a fault");
+
+        // Past the end of a mapped RAM smaller than its window.
+        let mut bus = Bus::new();
+        bus.map_device(0x1000, 0x2000, Box::new(Ram::new(0x1000)))
+            .unwrap();
+        assert!(bus.is_mapped(0x1FFC));
+        assert!(!bus.is_mapped(0x2000));
+        assert!(!bus.is_mapped(0x0FFC));
     }
 
     #[test]

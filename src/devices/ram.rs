@@ -14,6 +14,9 @@ impl Ram {
 }
 
 impl BusDevice for Ram {
+    fn is_mapped(&self, addr: Reg) -> bool {
+        (addr as usize) < self.data.len()
+    }
     fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError> {
         let index = addr as usize;
         if index < self.data.len() {

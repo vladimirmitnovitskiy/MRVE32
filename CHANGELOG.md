@@ -13,6 +13,22 @@ To release: rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, set the same
 version in both `Cargo.toml` files, and push a `vX.Y.Z` tag (see
 `.github/workflows/release.yml`).
 
+## [Unreleased]
+
+### Added
+
+- `BusDevice::is_mapped` (default `true`): whether an address is backed,
+  without accessing it. `Bus` answers from its memory map.
+
+### Fixed
+
+- A failing `sc.w` (no matching reservation) to an inaccessible address
+  now raises a store/AMO access fault instead of writing 1 to `rd`, as the
+  spec and Sail require.
+- ACT4 configuration (`tests/arch-test/mrve32-rv32imac`): misaligned loads
+  and stores are performed in hardware (`MISALIGNED_LDST: true`, Sail
+  `load_store: None`), not trapped, matching the emulator.
+
 ## [0.1.0] - 2026-11-02
 
 First public release (0.1.0).

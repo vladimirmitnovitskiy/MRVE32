@@ -3,7 +3,8 @@
 // - mtval holds the faulting address, the illegal instruction's encoding or
 //   the ebreak pc; no PMP, no U/S-mode, no HPM counters, no time CSR;
 // - LR/SC reserve exactly one aligned word; stores do not clear it;
-// - misaligned loads/stores/AMOs raise address-misaligned exceptions;
+// - misaligned loads/stores to RAM are performed in hardware (to devices they
+//   raise access faults); misaligned LR/SC/AMOs raise address-misaligned;
 // - mtvec MODE bit 1 is hardwired to 0 (MODE 2/3 select direct/vectored);
 // - the CLINT's mtime advances once per instruction.
 // Derived from config/cores/hazard3/hazard3-rv32imacb-u-pmp/sail.json at
@@ -133,7 +134,7 @@
     "misaligned": {
       "exceptions": {
         "load_store": {
-          "Some": "AlignmentException"
+          "None": null
         },
         "vector": {
           "None": null
@@ -174,7 +175,7 @@
           "write_idempotent": false,
           "misaligned_exceptions": {
             "load_store": {
-              "Some": "AlignmentException"
+              "Some": "AccessFault"
             },
             "vector": {
               "None": null
@@ -212,7 +213,7 @@
           "write_idempotent": true,
           "misaligned_exceptions": {
             "load_store": {
-              "Some": "AlignmentException"
+              "None": null
             },
             "vector": {
               "None": null

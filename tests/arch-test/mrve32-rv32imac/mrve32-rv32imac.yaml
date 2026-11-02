@@ -72,8 +72,13 @@ params:
   WFI_U_MODE: false
   WFI_FINITE: false
 
-  MISALIGNED_LDST: false
-  MISALIGNED_LDST_EXCEPTION_PRIORITY: high
+  # Misaligned loads and stores to RAM are performed in hardware, as one
+  # access (they never split); to devices they raise access faults.
+  # Misaligned atomics raise address-misaligned exceptions.
+  MISALIGNED_LDST: true
+  MISALIGNED_LDST_EXCEPTION_PRIORITY: low
+  MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE: 0
+  MISALIGNED_SPLIT_STRATEGY: custom
   MISALIGNED_AMO: false
   LRSC_MISALIGNED_BEHAVIOR: "always raise misaligned exception"
   # One reservation for exactly the word loaded by lr.w; sc.w to any other

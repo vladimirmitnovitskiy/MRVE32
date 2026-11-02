@@ -109,6 +109,9 @@ impl<D: BusDevice> BusDevice for Htif<D> {
     fn exit_request(&self) -> Option<u32> {
         self.exit.or_else(|| self.inner.exit_request())
     }
+    fn is_mapped(&self, addr: u32) -> bool {
+        self.inner.is_mapped(addr)
+    }
 }
 
 #[cfg(test)]

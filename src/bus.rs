@@ -56,6 +56,16 @@ pub trait BusDevice {
     fn exit_request(&self) -> Option<u32> {
         None
     }
+
+    /// Whether `addr` is backed by memory or a register of this device, i.e.
+    /// whether an access there would get past the memory map. The hart asks
+    /// this where it must report an access fault without accessing the
+    /// address: a failing `sc.w` to an inaccessible address faults like a
+    /// store (`norm:sc_retire_permission`). Devices that answer every
+    /// address of their mapping can keep the default `true`.
+    fn is_mapped(&self, _addr: Reg) -> bool {
+        true
+    }
 }
 
 /// Boxed devices are devices too (e.g. `Box<dyn BusDevice>` from a registry).
@@ -86,6 +96,9 @@ impl<T: BusDevice + ?Sized> BusDevice for Box<T> {
     }
     fn exit_request(&self) -> Option<u32> {
         (**self).exit_request()
+    }
+    fn is_mapped(&self, addr: Reg) -> bool {
+        (**self).is_mapped(addr)
     }
 }
 
@@ -179,6 +192,14 @@ impl BusDevice for Bus {
         self.devices
             .iter()
             .find_map(|entry| entry.device.exit_request())
+    }
+    fn is_mapped(&self, addr: Reg) -> bool {
+        let idx = self.devices.partition_point(|entry| entry.start <= addr);
+        idx > 0 && {
+            let entry = &self.devices[idx - 1];
+            let offset = addr.wrapping_sub(entry.start);
+            offset < entry.length && entry.device.is_mapped(offset)
+        }
     }
 }
 
