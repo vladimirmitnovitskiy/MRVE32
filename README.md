@@ -24,8 +24,10 @@ MRVE32 is a lightweight RV32IM emulator designed for bare-metal firmware executi
 - **Hardware Coprocessor Slot**: extension point via `trait Coprocessor` for custom instructions (opcodes `0x0B` and `0x2B`). Register updates are committed atomically and `x0` stays zero.
 - **Unidirectional Ownership**: Clean Rust ownership model (`cpu.step(&mut bus)`). The CPU core maintains zero references to the system bus.
 - **No dependencies**: the core library depends only on Rust `std`.
+- **Standard peripherals**: RAM, CLINT, an NS16550A-compatible UART and a `sifive,test0` test finisher (firmware sets the exit status), in the QEMU `virt` register layout so existing drivers work unchanged.
+- **Command-line runner**: `mrve32 firmware.elf` runs an ELF on a QEMU-virt-like memory map, streams the UART to stdout and exits with the firmware's status; `--trace` prints every instruction (GNU objdump-style disassembler), `--stop-on-trap`, `--max-steps`, double-fault detection.
 - **Pluggable devices**: a device is anything implementing `BusDevice` (Rust), a Python object with `read`/`write` methods, or a native module built separately against the device C ABI ([`include/mrve32_device.h`](include/mrve32_device.h), `mrve32::plugin`). Devices get `tick()` time and can raise interrupt lines. See [`docs/devices.md`](docs/devices.md).
-- **Python package (PyO3)**: `pip install`-able `mrve32` module with an `Emulator` class (ELF loading, symbols, breakpoints, run control, memory/register/CSR access, `map_device`). Typed (`py.typed` stubs).
+- **Python package (PyO3)**: `pip install`-able `mrve32` module with an `Emulator` class (ELF loading, symbols, breakpoints, run control, instruction tracing, memory/register/CSR access, `map_device`), `Uart`, `TestFinisher` and `disassemble`. Typed (`py.typed` stubs).
 
 ### Device modules
 
@@ -37,8 +39,35 @@ Modules live in `modules/` for now but depend on the core only through its publi
 
 ### Not implemented (yet)
 
-The `time`/`timeh` CSRs (read `mtime` from the CLINT instead), an interrupt controller (PLIC), User/Supervisor modes, PMP, debug triggers, and the C, A, F/D extensions.
+The `time`/`timeh` CSRs (read `mtime` from the CLINT instead), an interrupt controller (PLIC; the UART drives MEIP directly), User/Supervisor modes, PMP, debug triggers, HTIF/semihosting, and the C, A, F/D extensions.
 Firmware must be built with `-march=rv32im_zicsr_zifencei -mabi=ilp32`. Misaligned loads and stores are performed in hardware rather than trapped.
+
+---
+
+## Command-line runner
+
+```bash
+cargo install --path .           # installs the `mrve32` binary
+mrve32 firmware.elf              # UART -> stdout, exit status from the finisher
+mrve32 --trace --max-steps 20 firmware.elf
+mrve32 --help
+```
+
+Default memory map (QEMU `virt`-compatible, every address configurable):
+
+| Device | Base | Notes |
+|---|---|---|
+| RAM | `0x8000_0000` | `--ram-size`, default 128 MiB |
+| UART (NS16550A) | `0x1000_0000` | output to stdout; `--input FILE\|-` feeds its receiver |
+| Test finisher (`sifive,test0`) | `0x0010_0000` | write `0x5555` to pass, `(code << 16) \| 0x3333` to fail |
+| CLINT | `0x0200_0000` | `mtime`, `mtimecmp`, `msip` |
+
+Exit status is the firmware's (0–255), or 123 (idle in `wfi` forever),
+124 (`--max-steps`), 125 (usage/load error), 126 (trap with
+`--stop-on-trap`, or a double fault such as running without `mtvec`).
+[`tests/firmware`](tests/firmware) is a minimal freestanding C example
+(startup, linker script, UART, finisher) built by
+`scripts/build-test-firmware.sh`.
 
 ---
 
@@ -129,19 +158,23 @@ Run firmware and inspect the machine:
 ```python
 import mrve32
 
-# RAM at 0x8000_0000 (64 KiB) and a CLINT at 0x0200_0000 by default
-# (clint_base=None omits it).
-emu = mrve32.Emulator(ram_size=64 * 1024)
+# RAM at 0x8000_0000 and a CLINT at 0x0200_0000 by default
+# (clint_base=None omits it); add a UART and a test finisher as in QEMU virt.
+emu = mrve32.Emulator(ram_size=1 << 20)
+uart = mrve32.Uart()
+emu.map_device(0x1000_0000, uart)
+emu.map_device(0x0010_0000, mrve32.TestFinisher())
 
 entry = emu.load_elf("firmware.elf")      # path or bytes; sets pc to the entry
-emu.add_breakpoint(emu.symbol("main"))
-
 res = emu.run(1_000_000, stop_on_trap=True)
-print(res.reason, res.steps)              # "max_steps" | "breakpoint" | "trap" | "idle"
+print(res.reason, res.steps)              # "exit" | "max_steps" | "breakpoint" | "trap" | "idle"
+print(res.exit_code, uart.output())       # finisher status, bytes sent on the UART
 if res.trap:
     print(hex(res.trap.cause), res.trap.description)
 
 print(emu.regs, hex(emu.pc), emu.cycles, emu.instret)
+emu.add_breakpoint(emu.symbol("main"))
+emu.set_tracer(lambda pc, word, trap: print(hex(pc), mrve32.disassemble(word, pc) if word else trap))
 data = emu.read_bytes(emu.symbol("buffer"), 64)  # raises mrve32.BusError if unmapped
 ```
 

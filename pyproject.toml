@@ -23,6 +23,7 @@ Repository = "https://github.com/vladimirmitnovitskiy/MRVE32"
 
 [tool.maturin]
 features = ["python"]
+bindings = "pyo3"
 python-source = "python"
 module-name = "mrve32._native"
 

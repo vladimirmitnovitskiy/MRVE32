@@ -49,6 +49,13 @@ pub trait BusDevice {
     fn irq_lines(&self) -> Reg {
         0
     }
+
+    /// `Some(code)` once the device asks the machine to stop with an exit
+    /// code (e.g. a test finisher written by firmware). Checked by
+    /// [`Machine::run`](crate::Machine::run) after every step.
+    fn exit_request(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Boxed devices are devices too (e.g. `Box<dyn BusDevice>` from a registry).
@@ -76,6 +83,9 @@ impl<T: BusDevice + ?Sized> BusDevice for Box<T> {
     }
     fn irq_lines(&self) -> Reg {
         (**self).irq_lines()
+    }
+    fn exit_request(&self) -> Option<u32> {
+        (**self).exit_request()
     }
 }
 
@@ -116,13 +126,20 @@ impl Bus {
         Ok(())
     }
 
-    fn find_device(&mut self, addr: Reg) -> Result<(&mut Box<dyn BusDevice>, Reg), BusError> {
+    /// Routes an access to the device containing `addr`, with the device's
+    /// local offset. Errors are reported with the bus address, not the
+    /// device offset.
+    fn access<T>(
+        &mut self,
+        addr: Reg,
+        op: impl FnOnce(&mut dyn BusDevice, Reg) -> Result<T, BusError>,
+    ) -> Result<T, BusError> {
         let idx = self.devices.partition_point(|entry| entry.start <= addr);
         if idx > 0 {
             let entry = &mut self.devices[idx - 1];
             let offset = addr.wrapping_sub(entry.start);
             if offset < entry.length {
-                return Ok((&mut entry.device, offset));
+                return op(entry.device.as_mut(), offset).map_err(|e| e.rebased(entry.start));
             }
         }
         Err(BusError::AddressNotFound(addr))
@@ -131,28 +148,22 @@ impl Bus {
 
 impl BusDevice for Bus {
     fn read_u8(&mut self, addr: Reg) -> Result<u8, BusError> {
-        let (device, offset) = self.find_device(addr)?;
-        device.read_u8(offset)
+        self.access(addr, |device, offset| device.read_u8(offset))
     }
     fn read_u16(&mut self, addr: Reg) -> Result<u16, BusError> {
-        let (device, offset) = self.find_device(addr)?;
-        device.read_u16(offset)
+        self.access(addr, |device, offset| device.read_u16(offset))
     }
     fn read_u32(&mut self, addr: Reg) -> Result<u32, BusError> {
-        let (device, offset) = self.find_device(addr)?;
-        device.read_u32(offset)
+        self.access(addr, |device, offset| device.read_u32(offset))
     }
     fn write_u8(&mut self, addr: Reg, val: u8) -> Result<(), BusError> {
-        let (device, offset) = self.find_device(addr)?;
-        device.write_u8(offset, val)
+        self.access(addr, |device, offset| device.write_u8(offset, val))
     }
     fn write_u16(&mut self, addr: Reg, val: u16) -> Result<(), BusError> {
-        let (device, offset) = self.find_device(addr)?;
-        device.write_u16(offset, val)
+        self.access(addr, |device, offset| device.write_u16(offset, val))
     }
     fn write_u32(&mut self, addr: Reg, val: u32) -> Result<(), BusError> {
-        let (device, offset) = self.find_device(addr)?;
-        device.write_u32(offset, val)
+        self.access(addr, |device, offset| device.write_u32(offset, val))
     }
     fn tick(&mut self, cycles: u64) {
         for entry in &mut self.devices {
@@ -163,6 +174,24 @@ impl BusDevice for Bus {
         self.devices
             .iter()
             .fold(0, |lines, entry| lines | entry.device.irq_lines())
+    }
+    fn exit_request(&self) -> Option<u32> {
+        self.devices
+            .iter()
+            .find_map(|entry| entry.device.exit_request())
+    }
+}
+
+impl BusError {
+    /// The same error with its address moved from a device's local offset
+    /// to the bus address space of a device mapped at `base`.
+    fn rebased(self, base: Reg) -> Self {
+        match self {
+            Self::AddressNotFound(a) => Self::AddressNotFound(a.wrapping_add(base)),
+            Self::InvalidAccess(a) => Self::InvalidAccess(a.wrapping_add(base)),
+            Self::DeviceBusy(a) => Self::DeviceBusy(a.wrapping_add(base)),
+            other => other,
+        }
     }
 }
 
@@ -344,6 +373,33 @@ mod tests {
 
         // Сразу за границей
         assert_eq!(bus.read_u8(0x104), Err(BusError::AddressNotFound(0x104)));
+    }
+
+    #[test]
+    fn test_device_errors_report_bus_address() {
+        // A 1 KiB RAM in a 2 KiB window: the device itself rejects 0x1400.
+        let mut bus = Bus::new();
+        bus.map_device(0x1000, 0x800, Box::new(MockMemory::new(0x400)))
+            .unwrap();
+        assert_eq!(bus.read_u8(0x1400), Err(BusError::AddressNotFound(0x1400)));
+
+        // Nested buses compose: inner offset + inner base + outer base.
+        let mut inner = Bus::new();
+        inner
+            .map_device(0x100, 0x100, Box::new(MockMemory::new(0x10)))
+            .unwrap();
+        let mut outer = Bus::new();
+        outer
+            .map_device(0x4000_0000, 0x1000, Box::new(inner))
+            .unwrap();
+        assert_eq!(
+            outer.write_u8(0x4000_0120, 1),
+            Err(BusError::AddressNotFound(0x4000_0120))
+        );
+        assert_eq!(
+            outer.read_u8(0x4000_0010),
+            Err(BusError::AddressNotFound(0x4000_0010))
+        );
     }
 
     #[test]

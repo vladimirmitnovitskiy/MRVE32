@@ -9,7 +9,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dynamic = ["version"]
-# The device is passed to mrve32 through the device C ABI (version 1).
+# The device is passed to mrve32 through the device C ABI (version 2).
 dependencies = ["mrve32>=0.1,<0.2", "numpy>=1.24"]
 classifiers = [
     "Programming Language :: Rust",

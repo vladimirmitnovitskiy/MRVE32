@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from os import PathLike
 from typing import Final, Literal
 
@@ -31,10 +32,13 @@ class RunResult:
     def steps(self) -> int:
         """Clock cycles executed by the call."""
     @property
-    def reason(self) -> Literal["max_steps", "breakpoint", "trap", "idle"]: ...
+    def reason(self) -> Literal["max_steps", "breakpoint", "trap", "idle", "exit"]: ...
     @property
     def trap(self) -> Trap | None:
         """The trap that stopped the run when ``reason == "trap"``."""
+    @property
+    def exit_code(self) -> int | None:
+        """The code requested by a device (e.g. TestFinisher) when ``reason == "exit"``."""
 
 class Ram:
     """Main memory; attach with ``Emulator.map_device(base, Ram(size))``."""
@@ -52,6 +56,40 @@ class Clint:
     @property
     def size(self) -> int: ...
     def __mrve32_device__(self) -> object: ...
+
+class Uart:
+    """NS16550A-compatible UART (QEMU ``virt`` register model).
+
+    Transmitted bytes are collected, or with ``echo=True`` written line by
+    line to ``sys.stdout``. The object stays usable after it is attached.
+    """
+
+    def __init__(self, *, reg_shift: int = 0, echo: bool = False) -> None:
+        """``reg_shift``: registers ``1 << reg_shift`` bytes apart (0..2)."""
+    @property
+    def size(self) -> int: ...
+    def output(self) -> bytes:
+        """Bytes transmitted so far (not cleared)."""
+    def take_output(self) -> bytes:
+        """Bytes transmitted since the last call; clears the buffer."""
+    def write_input(self, data: bytes | bytearray) -> None:
+        """Queues bytes for the firmware to receive."""
+    @property
+    def pending_input(self) -> int: ...
+    def __mrve32_device__(self) -> object: ...
+
+class TestFinisher:
+    """``sifive,test0``: firmware writes ``0x5555`` (pass) or
+    ``(code << 16) | 0x3333`` (fail); ``run()`` then returns
+    ``reason == "exit"``. 4 KiB window."""
+
+    def __init__(self) -> None: ...
+    @property
+    def size(self) -> int: ...
+    def __mrve32_device__(self) -> object: ...
+
+def disassemble(word: int, pc: int | None = None) -> str:
+    """One instruction in GNU objdump style; absolute targets with ``pc``."""
 
 class Emulator:
     """A RISC-V MCU: CPU and bus with RAM and an optional CLINT.
@@ -81,6 +119,8 @@ class Emulator:
         :class:`mrve32.Device` with a window of ``size`` or ``device.size``
         bytes. Raises ``ValueError`` if the window overlaps another device.
         """
+    def set_tracer(self, tracer: Callable[[int, int | None, Trap | None], object] | None) -> None:
+        """Calls ``tracer(pc, word, trap)`` after every step; ``None`` removes it."""
     @property
     def devices(self) -> list[tuple[int, int, str]]:
         """Mapped devices as ``(base, size, type name)``, sorted by address."""

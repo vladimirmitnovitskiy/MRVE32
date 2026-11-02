@@ -12,6 +12,7 @@ A device is a window of `size` bytes on the bus. It gets:
 |---|---|
 | `read(offset, width)` / `write(offset, width, value)` | a load/store from the CPU or a host access; `offset` is relative to the window start, `width` is 1, 2 or 4, values are little-endian |
 | `tick(cycles)` | after every CPU step (`cycles` = 1), or from `Emulator.tick(n)` |
+| `exit_request()` | after every step; return an exit code to stop the run (`StopReason::Exit`, `reason == "exit"`), as the test finisher does |
 | `irq_lines()` | before every CPU step; return a mask in `mip` layout: `1 << 11` external (MEIP), `1 << 7` timer (MTIP), `1 << 3` software (MSIP). Lines of all devices are OR-ed |
 
 A failed access becomes a precise load/store access fault in the CPU
@@ -77,7 +78,7 @@ assert_eq!(bus.irq_lines(), MIP_MEIP);
 ## 2. Python object
 
 Any object with `read` and `write` methods (the `mrve32.Device` protocol);
-`tick` and `irq_lines` are optional. Fastest way to prototype a peripheral or
+`tick`, `irq_lines` and `exit_request` are optional. Fastest way to prototype a peripheral or
 a behavioural model in a testbench.
 
 ```python
@@ -106,8 +107,8 @@ emu.map_device(0x1000_0000, uart)
 - Raise `mrve32.BusError` for an access fault the firmware should see.
 - Any other exception is a bug in the model: it stops `run()`/`step()` and
   is re-raised from that call.
-- `tick` and `irq_lines` are called on every CPU step, so define them only if
-  the device needs them: each call crosses into Python.
+- `tick`, `irq_lines` and `exit_request` are called on every CPU step, so
+  define them only if the device needs them: each call crosses into Python.
 
 ## 3. Native module (separate package)
 
@@ -117,12 +118,12 @@ at a small, versioned **C ABI** rather than at Rust types:
 
 - [`include/mrve32_device.h`](../include/mrve32_device.h): the
   `mrve32_device` table (`abi_version`, `size`, `ctx`, `read`, `write`,
-  `tick`, `irq_lines`, `destroy`) and status codes.
+  `tick`, `irq_lines`, `destroy`, `exit_request`) and status codes.
 - `mrve32::plugin` (Rust): the same table as `RawDevice`, an exporter for
   any `BusDevice` (`RawDevice::new`) and the importer (`ForeignDevice`).
 
 In Python, the device object's `__mrve32_device__()` method returns a
-`PyCapsule` named `"mrve32.device.v1"` that holds a `mrve32_device *`.
+`PyCapsule` named `"mrve32.device"` that holds a `mrve32_device *`.
 `Emulator.map_device` takes the device out of it (sets `ctx` to NULL); from
 then on the emulator owns it and calls `destroy` when it is dropped.
 
@@ -171,7 +172,7 @@ Fill a heap-allocated `mrve32_device` and wrap it in a capsule with
 destructor frees the table and calls `dev->destroy(dev->ctx)` only if
 `dev->ctx != NULL` (otherwise the emulator owns the device).
 
-### Contract (ABI version 1)
+### Contract (ABI version 2)
 
 - Callbacks are called from one thread at a time, never concurrently, and
   must not unwind (a Rust panic in an exported callback aborts).

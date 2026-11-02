@@ -11,6 +11,8 @@ use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::PyBytes;
 
 use crate::devices::clint::{CLINT_SIZE, Clint};
+use crate::devices::finisher::{FINISHER_SIZE, TestFinisher};
+use crate::devices::uart::{Uart, UartIo};
 use crate::plugin::RawDevice;
 use crate::plugin::python::{into_capsule, take_from_capsule};
 use crate::{Bus, BusDevice, Cpu, ElfImage, Machine, Ram, Reg, StopReason, Trap, TrapCause};
@@ -78,24 +80,26 @@ impl PyTrap {
 pub struct PyRunResult {
     /// Steps (clock cycles) executed by the call.
     steps: u64,
-    /// "max_steps", "breakpoint", "trap" or "idle".
+    /// "max_steps", "breakpoint", "trap", "idle" or "exit".
     reason: &'static str,
     /// The trap that stopped the run (reason == "trap"), else None.
     trap: Option<PyTrap>,
+    /// The exit code requested by a device (reason == "exit"), else None.
+    exit_code: Option<u32>,
 }
 
 #[pymethods]
 impl PyRunResult {
     fn __repr__(&self) -> String {
-        match &self.trap {
-            Some(trap) => format!(
-                "RunResult(steps={}, reason='{}', trap={})",
-                self.steps,
-                self.reason,
-                trap.__repr__()
-            ),
-            None => format!("RunResult(steps={}, reason='{}')", self.steps, self.reason),
-        }
+        let extra = match (&self.trap, self.exit_code) {
+            (Some(trap), _) => format!(", trap={}", trap.__repr__()),
+            (None, Some(code)) => format!(", exit_code={code}"),
+            (None, None) => String::new(),
+        };
+        format!(
+            "RunResult(steps={}, reason='{}'{extra})",
+            self.steps, self.reason
+        )
     }
 }
 
@@ -161,6 +165,122 @@ impl PyClint {
     }
 }
 
+/// NS16550A-compatible UART (QEMU `virt` register model, 256-byte window).
+///
+/// Transmitted bytes are collected (`output()`, `take_output()`) or, with
+/// `echo=True`, written line by line to `sys.stdout`. `write_input()` feeds
+/// bytes the firmware receives. Usable after it has been attached.
+#[pyclass(name = "Uart", unsendable)]
+pub struct PyUart {
+    device: Option<Uart>,
+    io: UartIo,
+    size: Reg,
+}
+
+#[pymethods]
+impl PyUart {
+    #[new]
+    #[pyo3(signature = (*, reg_shift = 0, echo = false))]
+    fn new(reg_shift: u32, echo: bool) -> PyResult<Self> {
+        if reg_shift > 2 {
+            return Err(PyValueError::new_err("reg_shift must be 0, 1 or 2"));
+        }
+        let uart = Uart::with_reg_shift(reg_shift);
+        let io = uart.io();
+        if echo {
+            let mut line = Vec::new();
+            io.set_sink(Some(Box::new(move |b| {
+                line.push(b);
+                if b == b'\n' {
+                    let text = String::from_utf8_lossy(&line).into_owned();
+                    line.clear();
+                    Python::attach(|py| {
+                        let res = py
+                            .import("sys")
+                            .and_then(|sys| sys.getattr("stdout"))
+                            .and_then(|out| out.call_method1("write", (text,)));
+                        if let Err(e) = res {
+                            e.write_unraisable(py, None);
+                        }
+                    });
+                }
+            })));
+        }
+        Ok(Self {
+            size: uart.size(),
+            device: Some(uart),
+            io,
+        })
+    }
+
+    #[getter]
+    fn size(&self) -> Reg {
+        self.size
+    }
+
+    /// Bytes transmitted so far (not cleared; empty with `echo=True`).
+    fn output<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.io.output())
+    }
+
+    /// Bytes transmitted since the last call; clears the buffer.
+    fn take_output<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.io.take_output())
+    }
+
+    /// Queues bytes for the firmware to receive.
+    fn write_input(&self, data: PyBackedBytes) {
+        self.io.push_input(&data);
+    }
+
+    /// Received bytes not read by the firmware yet.
+    #[getter]
+    fn pending_input(&self) -> usize {
+        self.io.pending_input()
+    }
+
+    fn __mrve32_device__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let device = self.device.take().ok_or_else(already_attached)?;
+        into_capsule(py, RawDevice::new(device, self.size))
+    }
+}
+
+/// Test finisher (`sifive,test0`): firmware writes `0x5555` (pass) or
+/// `(code << 16) | 0x3333` (fail) and `Emulator.run` returns
+/// `reason == "exit"` with `exit_code`.
+#[pyclass(name = "TestFinisher", unsendable)]
+pub struct PyTestFinisher {
+    device: Option<TestFinisher>,
+}
+
+#[pymethods]
+impl PyTestFinisher {
+    #[new]
+    fn new() -> Self {
+        Self {
+            device: Some(TestFinisher::new()),
+        }
+    }
+
+    #[getter]
+    fn size(&self) -> Reg {
+        FINISHER_SIZE
+    }
+
+    fn __mrve32_device__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let device = self.device.take().ok_or_else(already_attached)?;
+        into_capsule(py, RawDevice::new(device, FINISHER_SIZE))
+    }
+}
+
+/// Disassembles one instruction word (GNU objdump style). With `pc`,
+/// branch and jump targets are absolute.
+#[pyfunction]
+#[pyo3(signature = (word, pc = None))]
+fn disassemble(word: u32, pc: Option<Reg>) -> String {
+    crate::disassemble(word, pc)
+}
+
 fn already_attached() -> PyErr {
     PyRuntimeError::new_err("the device is already attached to an emulator")
 }
@@ -181,6 +301,7 @@ struct PyDevice {
     obj: Py<PyAny>,
     has_tick: bool,
     has_irq_lines: bool,
+    has_exit_request: bool,
     error: ErrorSlot,
 }
 
@@ -266,6 +387,24 @@ impl BusDevice for PyDevice {
                 Err(e) => {
                     self.error.borrow_mut().get_or_insert(e);
                     0
+                }
+            }
+        })
+    }
+    fn exit_request(&self) -> Option<u32> {
+        if !self.has_exit_request || self.error.borrow().is_some() {
+            return None;
+        }
+        Python::attach(|py| {
+            match self
+                .obj
+                .call_method0(py, "exit_request")
+                .and_then(|v| v.extract::<Option<u32>>(py))
+            {
+                Ok(code) => code,
+                Err(e) => {
+                    self.error.borrow_mut().get_or_insert(e);
+                    None
                 }
             }
         })
@@ -374,8 +513,9 @@ impl Emulator {
     /// `__mrve32_device__()` method, e.g. `mrve32.Ram` or a separately
     /// installed package; its window size is fixed by the module), or any
     /// Python object with `read(offset, width) -> int` and
-    /// `write(offset, width, value)`, plus optional `tick(cycles)` and
-    /// `irq_lines() -> int`; its window is `size` or `device.size`.
+    /// `write(offset, width, value)`, plus optional `tick(cycles)`,
+    /// `irq_lines() -> int` and `exit_request() -> int | None`; its window
+    /// is `size` or `device.size`.
     #[pyo3(signature = (base, device, *, size = None))]
     fn map_device(
         &mut self,
@@ -418,9 +558,32 @@ impl Emulator {
             obj: device.clone().unbind(),
             has_tick: device.hasattr("tick")?,
             has_irq_lines: device.hasattr("irq_lines")?,
+            has_exit_request: device.hasattr("exit_request")?,
             error: self.device_error.clone(),
         };
         self.map(base, window_size(size)?, name, Box::new(wrapper))
+    }
+
+    /// Calls `tracer(pc, word, trap)` after every step (`word` is the
+    /// instruction word or None, `trap` a Trap or None); None removes it.
+    /// An exception in the tracer stops `run()` and is re-raised.
+    fn set_tracer(&mut self, tracer: Option<Py<PyAny>>) {
+        let Some(tracer) = tracer else {
+            self.machine.set_tracer(None);
+            return;
+        };
+        let error = self.device_error.clone();
+        self.machine.set_tracer(Some(Box::new(move |e| {
+            if error.borrow().is_some() {
+                return;
+            }
+            Python::attach(|py| {
+                let trap = e.trap.map(PyTrap::from);
+                if let Err(err) = tracer.call1(py, (e.pc, e.instruction, trap)) {
+                    error.borrow_mut().get_or_insert(err);
+                }
+            });
+        })));
     }
 
     /// Mapped devices as `(base, size, type name)`, sorted by address.
@@ -451,17 +614,19 @@ impl Emulator {
             .machine
             .run_until(max_steps, stop_on_trap, || error.borrow().is_some());
         self.check_devices()?;
-        let (reason, trap) = match res.reason {
-            StopReason::MaxSteps => ("max_steps", None),
-            StopReason::Breakpoint(_) => ("breakpoint", None),
-            StopReason::Trap(trap) => ("trap", Some(trap.into())),
-            StopReason::Idle => ("idle", None),
-            StopReason::Aborted => ("aborted", None),
+        let (reason, trap, exit_code) = match res.reason {
+            StopReason::MaxSteps => ("max_steps", None, None),
+            StopReason::Breakpoint(_) => ("breakpoint", None, None),
+            StopReason::Trap(trap) => ("trap", Some(trap.into()), None),
+            StopReason::Idle => ("idle", None, None),
+            StopReason::Exit(code) => ("exit", None, Some(code)),
+            StopReason::Aborted => ("aborted", None, None),
         };
         Ok(PyRunResult {
             steps: res.steps,
             reason,
             trap,
+            exit_code,
         })
     }
 
@@ -684,6 +849,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Emulator>()?;
     m.add_class::<PyRam>()?;
     m.add_class::<PyClint>()?;
+    m.add_class::<PyUart>()?;
+    m.add_class::<PyTestFinisher>()?;
+    m.add_function(wrap_pyfunction!(disassemble, m)?)?;
     m.add_class::<PyTrap>()?;
     m.add_class::<PyRunResult>()?;
     m.add("BusError", py.get_type::<BusError>())?;

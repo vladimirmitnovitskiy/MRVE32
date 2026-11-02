@@ -1,5 +1,5 @@
 /*
- * MRVE32 device ABI, version 1.
+ * MRVE32 device ABI, version 2.
  *
  * Lets a memory-mapped device built separately from the emulator (in C,
  * C++, Rust, ...) be attached to it. Mirrors `mrve32::plugin::RawDevice`;
@@ -16,10 +16,11 @@
 extern "C" {
 #endif
 
-#define MRVE32_DEVICE_ABI_VERSION 1u
+#define MRVE32_DEVICE_ABI_VERSION 2u
 
-/* Name of the PyCapsule holding a `mrve32_device *` (Python transport). */
-#define MRVE32_DEVICE_CAPSULE_NAME "mrve32.device.v1"
+/* Name of the PyCapsule holding a `mrve32_device *` (Python transport).
+ * The same for all ABI versions; `abi_version` tells them apart. */
+#define MRVE32_DEVICE_CAPSULE_NAME "mrve32.device"
 
 /* Callback status codes. */
 #define MRVE32_STATUS_OK 0
@@ -39,6 +40,9 @@ typedef void (*mrve32_tick_fn)(void *ctx, uint64_t cycles);
 typedef uint32_t (*mrve32_irq_lines_fn)(const void *ctx);
 /* Frees the device. Called exactly once by the owner. */
 typedef void (*mrve32_destroy_fn)(void *ctx);
+/* Returns 1 and stores *code when the device asks the machine to stop
+ * (e.g. a test finisher), else 0. Polled after every step. May be NULL. */
+typedef int32_t (*mrve32_exit_request_fn)(const void *ctx, uint32_t *code);
 
 typedef struct mrve32_device {
     uint32_t abi_version; /* MRVE32_DEVICE_ABI_VERSION */
@@ -49,6 +53,7 @@ typedef struct mrve32_device {
     mrve32_tick_fn tick;
     mrve32_irq_lines_fn irq_lines;
     mrve32_destroy_fn destroy;
+    mrve32_exit_request_fn exit_request;
 } mrve32_device;
 
 /*

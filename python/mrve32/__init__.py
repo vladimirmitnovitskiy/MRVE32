@@ -17,8 +17,11 @@ from ._native import (
     Emulator,
     Ram,
     RunResult,
+    TestFinisher,
     Trap,
+    Uart,
     __version__,
+    disassemble,
 )
 
 
@@ -26,8 +29,9 @@ from ._native import (
 class Device(Protocol):
     """Interface of a device implemented in Python.
 
-    ``tick(cycles)`` and ``irq_lines() -> int`` are optional. Raise
-    :class:`BusError` from ``read``/``write`` to signal an access fault.
+    ``tick(cycles)``, ``irq_lines() -> int`` and
+    ``exit_request() -> int | None`` are optional. Raise :class:`BusError`
+    from ``read``/``write`` to signal an access fault.
     """
 
     def read(self, offset: int, width: int) -> int: ...
@@ -43,6 +47,9 @@ __all__ = [
     "Emulator",
     "Ram",
     "RunResult",
+    "TestFinisher",
     "Trap",
+    "Uart",
     "__version__",
+    "disassemble",
 ]

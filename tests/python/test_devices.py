@@ -151,3 +151,134 @@ def test_read_value_must_fit_width():
     with pytest.raises(ValueError, match="does not fit"):
         emu.read_u8(DEV)
     assert emu.read_u32(DEV) == 0x1FF
+
+
+FIRMWARE = __import__("pathlib").Path(__file__).resolve().parents[1] / "firmware" / "hello.elf"
+
+
+def virt(input=b""):
+    """QEMU-virt-like machine, as used by the mrve32 runner."""
+    emu = Emulator(ram_size=1 << 20)
+    uart = mrve32.Uart()
+    emu.map_device(0x1000_0000, uart)
+    emu.map_device(0x0010_0000, mrve32.TestFinisher())
+    uart.write_input(input)
+    emu.load_elf(FIRMWARE)
+    return emu, uart
+
+
+def test_c_firmware_with_uart_and_finisher():
+    emu, uart = virt()
+    res = emu.run(100_000)
+    assert (res.reason, res.exit_code, res.trap) == ("exit", 0, None)
+    assert uart.output() == b"Hello from MRVE32!\nfib(20) = 6765\n"
+    assert uart.take_output().startswith(b"Hello")
+    assert uart.output() == b""
+    assert "exit_code=0" in repr(res)
+
+    emu, uart = virt(b"fail")
+    res = emu.run(100_000)
+    assert (res.reason, res.exit_code) == ("exit", 3)
+    assert uart.output().endswith(b"input: fail")
+    assert uart.pending_input == 0
+
+
+def test_uart_echo(capsys):
+    emu = Emulator()
+    uart = mrve32.Uart(echo=True)
+    emu.map_device(0x1000_0000, uart)
+    for b in b"one\ntwo":
+        emu.write_u8(0x1000_0000, b)
+    assert capsys.readouterr().out == "one\n", "line buffered"
+    assert uart.output() == b""
+    with pytest.raises(ValueError):
+        mrve32.Uart(reg_shift=3)
+
+
+def test_python_device_exit_request():
+    class Halt:
+        size = 4
+        code = None
+
+        def read(self, offset, width):
+            return 0
+
+        def write(self, offset, width, value):
+            self.code = value
+
+        def exit_request(self):
+            return self.code
+
+    emu = Emulator()
+    emu.map_device(DEV, Halt())
+    # lui a0, 0x40000; li a1, 9; sw a1, 0(a0); nop
+    emu.load_program(emu.ram_base, [0x40000537, 0x00900593, 0x00B52023, NOP])
+    res = emu.run(10)
+    assert (res.reason, res.exit_code, res.steps) == ("exit", 9, 3)
+
+
+def test_tracer_and_disassemble():
+    emu, _ = virt()
+    trace = []
+    emu.set_tracer(lambda pc, word, trap: trace.append((pc, word, trap)))
+    emu.run(3)
+    assert [pc for pc, *_ in trace] == [0x8000_0000, 0x8000_0004, 0x8000_0008]
+    pc, word, trap = trace[0]
+    assert mrve32.disassemble(word, pc) == "auipc sp, 0x100"
+    assert trap is None
+    assert mrve32.disassemble(0x0080006F) == "j 8"
+    assert mrve32.disassemble(0xFFFF_FFFF) == ".word 0xffffffff"
+
+    emu.set_tracer(None)
+    emu.run(3)
+    assert len(trace) == 3
+
+    def broken(pc, word, trap):
+        raise RuntimeError("tracer bug")
+
+    emu.set_tracer(broken)
+    with pytest.raises(RuntimeError, match="tracer bug"):
+        emu.run(100)
+    assert emu.cycles == 7, "the run stops at the first failing callback"
+
+
+def _capsule(name, abi_version):
+    """A capsule holding a device table with the given ABI version; the
+    emulator must reject it before calling anything in it."""
+    import ctypes
+
+    class Table(ctypes.Structure):
+        _fields_ = [("abi_version", ctypes.c_uint32), ("size", ctypes.c_uint32),
+                    ("ctx", ctypes.c_void_p)] + [(f, ctypes.c_void_p) for f in
+                    ("read", "write", "tick", "irq_lines", "destroy", "exit_request")]
+
+    table = Table(abi_version=abi_version, size=4, ctx=1)
+    new = ctypes.pythonapi.PyCapsule_New
+    new.restype = ctypes.py_object
+    new.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    capsule = new(ctypes.addressof(table), name, None)
+    return capsule, table  # keep the table alive
+
+
+def test_abi_mismatch_is_a_clean_error():
+    emu = Emulator()
+
+    class Device:
+        def __init__(self, capsule):
+            self.capsule = capsule
+
+        def __mrve32_device__(self):
+            return self.capsule
+
+    old_name, t1 = _capsule(b"mrve32.device.v1", 1)
+    with pytest.raises(ValueError, match="older mrve32 device ABI"):
+        emu.map_device(DEV, Device(old_name))
+
+    other_version, t2 = _capsule(b"mrve32.device", mrve32.DEVICE_ABI_VERSION + 1)
+    with pytest.raises(ValueError, match="ABI version .* is not supported"):
+        emu.map_device(DEV, Device(other_version))
+
+    foreign, t3 = _capsule(b"something.else", mrve32.DEVICE_ABI_VERSION)
+    with pytest.raises(TypeError, match="capsule"):
+        emu.map_device(DEV, Device(foreign))
+    assert emu.devices == [(0x0200_0000, 0x1_0000, "Clint"), (0x8000_0000, 0x1_0000, "Ram")]

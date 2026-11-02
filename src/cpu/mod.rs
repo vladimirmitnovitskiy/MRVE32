@@ -6,6 +6,7 @@ use crate::types::Reg;
 pub mod coprocessor;
 pub mod csr;
 pub mod decode;
+pub mod disasm;
 pub mod instructions;
 pub mod trap;
 
@@ -19,6 +20,8 @@ pub struct Cpu {
     coprocessor: Option<Box<dyn Coprocessor>>,
     /// Stalled in WFI until an enabled interrupt becomes pending.
     waiting: bool,
+    /// Instruction word fetched by the last step, if any.
+    last_fetch: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +49,7 @@ impl Cpu {
             csrs: CsrFile::new(),
             coprocessor: None,
             waiting: false,
+            last_fetch: None,
         }
     }
 
@@ -80,6 +84,13 @@ impl Cpu {
         self.waiting
     }
 
+    /// The instruction word fetched by the last [`step`](Self::step): `None`
+    /// if that step took an interrupt, waited in `wfi` or failed to fetch.
+    /// The instruction may still have trapped (e.g. illegal or `ecall`).
+    pub fn last_fetch(&self) -> Option<u32> {
+        self.last_fetch
+    }
+
     /// Advances the hart by one clock cycle.
     ///
     /// 1. `mip` is sampled from the bus interrupt lines
@@ -97,6 +108,7 @@ impl Cpu {
     pub fn step(&mut self, bus: &mut dyn BusDevice) -> Option<Trap> {
         self.csrs.cycle_written = false;
         self.csrs.instret_written = false;
+        self.last_fetch = None;
         self.csrs.mip = bus.irq_lines() & (csr::MIP_MSIP | csr::MIP_MTIP | csr::MIP_MEIP);
 
         let pending = self.csrs.mip & self.csrs.mie;
@@ -217,6 +229,7 @@ impl Cpu {
         let raw = bus
             .read_u32(pc)
             .map_err(|_| Exception::InstructionAccessFault(pc))?;
+        self.last_fetch = Some(raw);
         // 2. Decode
         let inst = decode::decode(raw)?;
 

@@ -19,12 +19,15 @@
 //!   [`DEVICE_CAPSULE_NAME`], returned by the device object's
 //!   `__mrve32_device__()` method (see [`python`], feature `python-device`).
 //!
-//! # Contract (ABI version 1)
+//! # Contract (ABI version 2)
 //!
 //! - All offsets are relative to the start of the device window; `width` is
 //!   1, 2 or 4 bytes; values are little-endian, zero-extended in a `u32`.
 //! - Callbacks return one of the `STATUS_*` codes.
-//! - `tick` and `irq_lines` may be NULL (no time behaviour / no interrupts).
+//! - `tick`, `irq_lines` and `exit_request` may be NULL (no time
+//!   behaviour / no interrupts / never stops the machine).
+//! - `exit_request` returns 1 and stores the exit code when the device asks
+//!   the machine to stop, otherwise 0.
 //! - The emulator calls the callbacks from one thread at a time and calls
 //!   `destroy` exactly once. Callbacks must not unwind (a Rust panic inside
 //!   an exported callback aborts the process).
@@ -36,10 +39,13 @@ use crate::bus::{BusDevice, BusError};
 use crate::types::Reg;
 
 /// Version of the [`RawDevice`] layout and contract.
-pub const DEVICE_ABI_VERSION: u32 = 1;
+///
+/// Version 1 (never released) lacked `exit_request`.
+pub const DEVICE_ABI_VERSION: u32 = 2;
 
-/// Name of the `PyCapsule` that carries a `*mut RawDevice`.
-pub const DEVICE_CAPSULE_NAME: &CStr = c"mrve32.device.v1";
+/// Name of the `PyCapsule` that carries a `*mut RawDevice`. It stays the
+/// same across ABI versions; `abi_version` tells them apart.
+pub const DEVICE_CAPSULE_NAME: &CStr = c"mrve32.device";
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_ADDRESS_NOT_FOUND: i32 = 1;
@@ -53,6 +59,7 @@ pub type WriteFn =
 pub type TickFn = unsafe extern "C" fn(ctx: *mut c_void, cycles: u64);
 pub type IrqLinesFn = unsafe extern "C" fn(ctx: *const c_void) -> u32;
 pub type DestroyFn = unsafe extern "C" fn(ctx: *mut c_void);
+pub type ExitRequestFn = unsafe extern "C" fn(ctx: *const c_void, code: *mut u32) -> i32;
 
 /// A device behind the C ABI. Owns the device until it is imported or
 /// destroyed; it has no `Drop` of its own.
@@ -70,6 +77,7 @@ pub struct RawDevice {
     pub tick: Option<TickFn>,
     pub irq_lines: Option<IrqLinesFn>,
     pub destroy: DestroyFn,
+    pub exit_request: Option<ExitRequestFn>,
 }
 
 impl RawDevice {
@@ -85,6 +93,7 @@ impl RawDevice {
             tick: Some(export_tick::<D>),
             irq_lines: Some(export_irq_lines::<D>),
             destroy: export_destroy::<D>,
+            exit_request: Some(export_exit_request::<D>),
         }
     }
 }
@@ -198,6 +207,13 @@ impl BusDevice for ForeignDevice {
             None => 0,
         }
     }
+    fn exit_request(&self) -> Option<u32> {
+        let exit_request = self.raw.exit_request?;
+        let mut code = 0;
+        // SAFETY: as in `read`.
+        let requested = unsafe { exit_request(self.raw.ctx, &mut code) };
+        (requested != 0).then_some(code)
+    }
 }
 
 impl Drop for ForeignDevice {
@@ -275,6 +291,18 @@ unsafe extern "C" fn export_irq_lines<D: BusDevice>(ctx: *const c_void) -> u32 {
     unsafe { &*ctx.cast::<D>() }.irq_lines()
 }
 
+unsafe extern "C" fn export_exit_request<D: BusDevice>(ctx: *const c_void, code: *mut u32) -> i32 {
+    // SAFETY: as in export_read.
+    match unsafe { &*ctx.cast::<D>() }.exit_request() {
+        Some(c) => {
+            // SAFETY: the caller passes a valid out pointer.
+            unsafe { code.write(c) };
+            1
+        }
+        None => 0,
+    }
+}
+
 unsafe extern "C" fn export_destroy<D: BusDevice>(ctx: *mut c_void) {
     // SAFETY: ctx came from Box::into_raw in RawDevice::new::<D>.
     drop(unsafe { Box::from_raw(ctx.cast::<D>()) });
@@ -298,7 +326,7 @@ pub mod python {
 
     use super::{DEVICE_ABI_VERSION, DEVICE_CAPSULE_NAME, ForeignDevice, RawDevice};
 
-    /// Wraps an exported device in a `mrve32.device.v1` capsule.
+    /// Wraps an exported device in a `mrve32.device` capsule.
     pub fn into_capsule(py: Python<'_>, raw: RawDevice) -> PyResult<Bound<'_, PyAny>> {
         let ptr = Box::into_raw(Box::new(raw));
         // SAFETY: ptr is a valid heap RawDevice; the name is 'static.
@@ -333,7 +361,7 @@ pub mod python {
         }
     }
 
-    /// Takes the device out of a `mrve32.device.v1` capsule.
+    /// Takes the device out of a `mrve32.device` capsule.
     pub fn take_from_capsule(capsule: &Bound<'_, PyAny>) -> PyResult<ForeignDevice> {
         // SAFETY: GetPointer checks the object type and the name.
         let ptr =
@@ -341,6 +369,22 @@ pub mod python {
                 .cast::<RawDevice>();
         if ptr.is_null() {
             let _ = PyErr::take(capsule.py());
+            // SAFETY: GetName is only called on a capsule.
+            let name = unsafe {
+                if ffi::PyCapsule_CheckExact(capsule.as_ptr()) != 0 {
+                    let name = ffi::PyCapsule_GetName(capsule.as_ptr());
+                    let _ = PyErr::take(capsule.py());
+                    (!name.is_null()).then(|| std::ffi::CStr::from_ptr(name).to_owned())
+                } else {
+                    None
+                }
+            };
+            if name.is_some_and(|n| n.to_bytes().starts_with(b"mrve32.device")) {
+                return Err(PyValueError::new_err(
+                    "the device module was built for an older mrve32 device ABI; \
+                     rebuild it against this mrve32 version",
+                ));
+            }
             return Err(PyTypeError::new_err(format!(
                 "__mrve32_device__() must return a '{}' capsule",
                 DEVICE_CAPSULE_NAME.to_string_lossy()
@@ -410,6 +454,9 @@ mod tests {
         fn irq_lines(&self) -> Reg {
             self.reg & 0x800
         }
+        fn exit_request(&self) -> Option<u32> {
+            (self.reg == 0xDEAD).then_some(7)
+        }
     }
 
     impl Drop for Probe {
@@ -436,6 +483,9 @@ mod tests {
         dev.tick(5);
         dev.tick(2);
         assert_eq!(ticks.get(), 7);
+        assert_eq!(dev.exit_request(), None);
+        dev.write_u32(0, 0xDEAD).unwrap();
+        assert_eq!(dev.exit_request(), Some(7));
 
         // Errors keep their kind across the ABI.
         assert_eq!(dev.read_u32(4), Err(BusError::AddressNotFound(4)));
@@ -494,7 +544,8 @@ mod tests {
         assert_eq!(offset_of!(RawDevice, tick), 32);
         assert_eq!(offset_of!(RawDevice, irq_lines), 40);
         assert_eq!(offset_of!(RawDevice, destroy), 48);
-        assert_eq!(size_of::<RawDevice>(), 56);
+        assert_eq!(offset_of!(RawDevice, exit_request), 56);
+        assert_eq!(size_of::<RawDevice>(), 64);
     }
 
     #[test]
@@ -502,8 +553,10 @@ mod tests {
         let mut raw = RawDevice::new(Ram::new(4), 4);
         raw.tick = None;
         raw.irq_lines = None;
+        raw.exit_request = None;
         let mut dev = unsafe { ForeignDevice::from_raw(raw) }.unwrap();
         dev.tick(10);
         assert_eq!(dev.irq_lines(), 0);
+        assert_eq!(dev.exit_request(), None);
     }
 }

@@ -9,12 +9,15 @@ pub mod types;
 pub use bus::{Bus, BusDevice, BusError};
 pub use cpu::coprocessor::Coprocessor;
 pub use cpu::csr::CsrError;
+pub use cpu::disasm::disassemble;
 pub use cpu::instructions::Instruction;
 pub use cpu::{Cpu, Exception, Interrupt, Trap, TrapCause};
 pub use devices::clint::Clint;
+pub use devices::finisher::TestFinisher;
 pub use devices::ram::Ram;
+pub use devices::uart::{Uart, UartIo};
 pub use elf::{ElfError, ElfImage};
-pub use machine::{Machine, RunResult, StopReason};
+pub use machine::{Machine, RunResult, StopReason, TraceEvent, Tracer};
 pub use plugin::{ForeignDevice, RawDevice};
 pub use types::Reg;
 
