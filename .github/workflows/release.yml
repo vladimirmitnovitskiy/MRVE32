@@ -3,7 +3,8 @@ name: Release
 # Builds wheels and sdists for `mrve32` and `mrve32-snn`; on a `v*` tag also
 # publishes them to PyPI with Trusted Publishing (no API token: configure
 # both projects on pypi.org -> Publishing -> GitHub, workflow `release.yml`,
-# environment `pypi`). Run manually to build without publishing.
+# environments `pypi` for mrve32 and `pypi-snn` for mrve32-snn). Run manually
+# to build without publishing.
 
 on:
   push:
@@ -116,8 +117,8 @@ jobs:
           cd "$RUNNER_TEMP"
           python -m pytest -q -p no:cacheprovider tests/python python
 
-  publish:
-    name: Publish to PyPI
+  publish-mrve32:
+    name: Publish mrve32 to PyPI
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check-version, wheels, sdist, test-wheels]
     runs-on: ubuntu-latest
@@ -129,6 +130,31 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: "*-mrve32*"
+          path: all-dist
+          merge-multiple: true
+      - name: Select mrve32 packages
+        run: |
+          mkdir -p dist
+          cp all-dist/mrve32-* dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  publish-snn:
+    name: Publish mrve32-snn to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check-version, wheels, sdist, test-wheels]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-snn
+      url: https://pypi.org/p/mrve32-snn
+    permissions:
+      id-token: write # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-mrve32-snn*"
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1

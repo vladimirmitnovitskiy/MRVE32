@@ -1,4 +1,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable%202024-orange.svg)](https://www.rust-lang.org)
+[![Crates.io](https://img.shields.io/crates/v/mrve32.svg)](https://crates.io/crates/mrve32)
+[![Docs.rs](https://docs.rs/mrve32/badge.svg)](https://docs.rs/mrve32)
+[![PyPI](https://img.shields.io/pypi/v/mrve32.svg)](https://pypi.org/project/mrve32/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/ci.yml/badge.svg)](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/ci.yml)
 
