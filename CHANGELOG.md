@@ -43,10 +43,18 @@ First public release (0.1.0).
   CSR names), checked against binutils 2.46 over the whole 16-bit space and
   random 32-bit words.
 - `mrve32` command-line runner: UART console, finisher exit codes,
-  `--trace`, `--stats`, `--isa rv32imac|rv32ima`, configurable memory map.
+  `--trace`, `--stats`, `--isa rv32imac|rv32ima`, configurable memory map,
+  `--htif` (HTIF `tohost` exit and console) and `--signature FILE`
+  (Sail-format signature dump) for compliance suites.
+- `Htif`: a wrapper device that watches `tohost` in RAM (riscv-tests, Sail
+  and Spike-style tests).
 - Python package `mrve32` (abi3 wheels for CPython >= 3.10) with type stubs.
 - `mrve32-snn`: SNN layer accelerator device (behavioural model, spec v0)
   as a separate crate and Python package, with a NumPy reference model.
+- RISC-V Architectural Certification Tests (ACT4): device configuration
+  (`tests/arch-test/`), `scripts/arch-test.sh` for the Sail flow and for a
+  Sail-free differential flow against QEMU (104 unprivileged tests agree),
+  CI workflow.
 - Verification: 75 riscv-tests (rv32ui/um/ua/uc/mi) on RV32IMAC and RV32IMA,
   exhaustive decoder tests, cargo-fuzz targets (weekly CI), interpreter
   throughput benchmark (`cargo bench --bench mips`), MSRV 1.88 checked in CI.

@@ -1,0 +1,105 @@
+name: riscv-arch-test
+
+# RISC-V Architectural Certification Tests (ACT4), see tests/arch-test/README.md.
+#  - differential: unprivileged tests with MRVE32's own signatures as
+#    expected values, run on MRVE32 and on QEMU (no Sail needed).
+#  - sail: the ACT4 framework builds self-checking ELFs with Sail-generated
+#    expected values for tests/arch-test/mrve32-rv32imac, run on MRVE32.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with ARCH_TEST_REV in scripts/arch-test.sh.
+  ARCH_TEST_REV: 2dc36dd2f3d25383039effa10f1a3930a78a945a
+
+jobs:
+  differential:
+    name: Differential vs QEMU (unprivileged)
+    runs-on: ubuntu-latest
+    # The toolchain this flow was verified with: GCC 16, binutils 2.46, QEMU 10.2.
+    container: fedora:44
+    steps:
+      - name: Install tools
+        run: >
+          dnf install -y --setopt=install_weak_deps=False
+          git findutils gawk cargo rust
+          gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu qemu-system-riscv-core
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: riscv-non-isa/riscv-arch-test
+          ref: ${{ env.ARCH_TEST_REV }}
+          path: riscv-arch-test
+
+      - name: Run
+        run: scripts/arch-test.sh local --qemu
+        env:
+          ARCH_TEST: ${{ github.workspace }}/riscv-arch-test
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-test-differential
+          path: target/arch-test/local
+
+  sail:
+    name: ACT4 with Sail
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      # The framework (and its setup action) expects to be the workspace root.
+      - uses: actions/checkout@v4
+        with:
+          repository: riscv-non-isa/riscv-arch-test
+          ref: ${{ env.ARCH_TEST_REV }}
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          path: mrve32
+
+      # mise (uv, Ruby + UDB), Sail 0.16 and the riscv-gnu-toolchain release,
+      # exactly as riscv-arch-test's own CI.
+      - name: Set up ACT4 tools
+        uses: ./.github/actions/setup-tools
+        with:
+          install-architecture-tools: "true"
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build ELFs (expected values from Sail)
+        run: >
+          FAST=True
+          CONFIG_FILES="$GITHUB_WORKSPACE/mrve32/tests/arch-test/mrve32-rv32imac/test_config.yaml"
+          make elfs --jobs "$(nproc)"
+
+      - name: Run on MRVE32
+        run: mrve32/scripts/arch-test.sh run work/mrve32-rv32imac/elfs
+
+      - name: Upload ELFs and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-test-sail
+          path: |
+            work/mrve32-rv32imac/elfs
+            work/mrve32-rv32imac/test_list.md
+            mrve32/target/arch-test/logs
+          if-no-files-found: ignore

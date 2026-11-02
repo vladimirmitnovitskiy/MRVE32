@@ -14,6 +14,7 @@ pub use cpu::instructions::{AmoOp, Instruction};
 pub use cpu::{Cpu, Exception, Interrupt, Trap, TrapCause};
 pub use devices::clint::Clint;
 pub use devices::finisher::TestFinisher;
+pub use devices::htif::Htif;
 pub use devices::ram::Ram;
 pub use devices::uart::{Uart, UartIo};
 pub use elf::{ElfError, ElfImage};

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds tests/firmware/hello.elf (used by tests/cli.rs) with a RISC-V GCC.
+# Builds tests/firmware/{hello,htif}.elf (used by tests/cli.rs) with a RISC-V GCC.
 # Reproducible: fixed object names, no build id, source paths remapped.
 #
 #   CROSS=riscv64-unknown-elf- scripts/build-test-firmware.sh
@@ -26,4 +26,7 @@ cd "$SRC"
 "${CROSS}gcc" "${CFLAGS[@]}" -c hello.c -o "$WORK/hello.o"
 "${CROSS}gcc" -march=rv32imac_zicsr -mabi=ilp32 -nostdlib -nostartfiles -static \
     -Wl,--build-id=none -Wl,--no-warn-rwx-segments -T link.ld "$WORK/start.o" "$WORK/hello.o" -o hello.elf
-echo "built $SRC/hello.elf with ${CROSS}gcc"
+"${CROSS}gcc" "${CFLAGS[@]}" -c htif.S -o "$WORK/htif.o"
+"${CROSS}gcc" -march=rv32imac_zicsr -mabi=ilp32 -nostdlib -nostartfiles -static \
+    -Wl,--build-id=none -Wl,--no-warn-rwx-segments -T link.ld "$WORK/htif.o" -o htif.elf
+echo "built $SRC/hello.elf and $SRC/htif.elf with ${CROSS}gcc"

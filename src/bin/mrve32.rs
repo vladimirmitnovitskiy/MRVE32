@@ -8,8 +8,8 @@ use std::rc::Rc;
 use mrve32::devices::clint::CLINT_SIZE;
 use mrve32::devices::finisher::FINISHER_SIZE;
 use mrve32::{
-    Bus, Clint, Cpu, ElfImage, Exception, Machine, Ram, Reg, StopReason, TestFinisher, Trap,
-    TrapCause, Uart, disassemble, is_compressed,
+    Bus, BusDevice, Clint, Cpu, ElfImage, Exception, Htif, Machine, Ram, Reg, StopReason,
+    TestFinisher, Trap, TrapCause, Uart, disassemble, is_compressed,
 };
 
 const USAGE: &str = "\
@@ -31,6 +31,13 @@ Options:
   --clint ADDR|none      CLINT base address [default: 0x2000000]
   --input FILE|-         bytes the firmware receives on the UART (read
                          up front; - reads stdin to EOF)
+  --htif                 HTIF at the ELF symbol `tohost` (riscv-tests,
+                         Sail/Spike-style tests): exit codes and console
+                         output, like the finisher and the UART
+  --signature FILE       at the end, write the memory from the ELF symbol
+                         `begin_signature` to `end_signature` to FILE, one
+                         32-bit word per line in hex (like Sail's
+                         --test-signature with granularity 4)
   --max-steps N          stop after N steps
   --stop-on-trap         stop at the first trap (exception or interrupt)
   --trace                print every executed instruction to stderr
@@ -39,7 +46,8 @@ Options:
   -V, --version          print the version
 
 Exit status:
-  0..=255  the firmware's finisher status (codes above 255 become 255)
+  0..=255  the firmware's finisher (or HTIF) status (codes above 255
+           become 255)
   123      the hart waits in wfi with no interrupt enabled (never wakes)
   124      --max-steps reached
   125      usage or load error
@@ -60,6 +68,8 @@ struct Options {
     finisher: Option<Reg>,
     clint: Option<Reg>,
     input: Option<String>,
+    htif: bool,
+    signature: Option<String>,
     max_steps: u64,
     stop_on_trap: bool,
     trace: bool,
@@ -116,6 +126,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Parsed, String> 
         finisher: Some(0x0010_0000),
         clint: Some(0x0200_0000),
         input: None,
+        htif: false,
+        signature: None,
         max_steps: u64::MAX,
         stop_on_trap: false,
         trace: false,
@@ -151,6 +163,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Parsed, String> 
             "--finisher" => opts.finisher = parse_opt_addr(&arg, &value(&arg)?)?,
             "--clint" => opts.clint = parse_opt_addr(&arg, &value(&arg)?)?,
             "--input" => opts.input = Some(value(&arg)?),
+            "--htif" => opts.htif = true,
+            "--signature" => opts.signature = Some(value(&arg)?),
             "--max-steps" => {
                 let v = value(&arg)?;
                 opts.max_steps =
@@ -168,20 +182,53 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Parsed, String> 
     Ok(Parsed::Run(opts))
 }
 
-/// `line_open` is set while the firmware's UART output ends mid-line.
-fn build_machine(opts: &Options, line_open: Rc<Cell<bool>>) -> Result<Machine, String> {
+/// Console output (UART, HTIF) to stdout; `line_open` is set while it ends
+/// mid-line.
+fn console(line_open: Rc<Cell<bool>>) -> Box<dyn FnMut(u8)> {
+    let mut stdout = io::stdout();
+    Box::new(move |b| {
+        // A closed stdout must not stop the firmware.
+        let _ = stdout.write_all(&[b]);
+        if b == b'\n' {
+            let _ = stdout.flush();
+        }
+        line_open.set(b != b'\n');
+    })
+}
+
+fn symbol(image: &ElfImage, opt: &str, name: &str) -> Result<Reg, String> {
+    image
+        .symbol(name)
+        .ok_or_else(|| format!("{opt}: the ELF has no symbol `{name}`"))
+}
+
+fn build_machine(
+    opts: &Options,
+    image: &ElfImage,
+    line_open: Rc<Cell<bool>>,
+) -> Result<Machine, String> {
     let mut bus = Bus::new();
-    let mut map = |name: &str, base: Reg, size: Reg, dev: Box<dyn mrve32::BusDevice>| {
+    let mut map = |name: &str, base: Reg, size: Reg, dev: Box<dyn BusDevice>| {
         bus.map_device(base, size, dev)
             .map_err(|e| format!("cannot map {name} at 0x{base:08X}: {e}"))
     };
     let ram_len = Reg::try_from(opts.ram_size).unwrap_or(Reg::MAX);
-    map(
-        "RAM",
-        opts.ram_base,
-        ram_len,
-        Box::new(Ram::new(opts.ram_size)),
-    )?;
+    let ram = Ram::new(opts.ram_size);
+    let ram: Box<dyn BusDevice> = if opts.htif {
+        let tohost = symbol(image, "--htif", "tohost")?;
+        let offset = tohost.wrapping_sub(opts.ram_base);
+        if offset >= ram_len || tohost % 4 != 0 {
+            return Err(format!(
+                "--htif: `tohost` (0x{tohost:08x}) is not an aligned RAM address"
+            ));
+        }
+        let mut htif = Htif::new(ram, offset);
+        htif.set_sink(Some(console(line_open.clone())));
+        Box::new(htif)
+    } else {
+        Box::new(ram)
+    };
+    map("RAM", opts.ram_base, ram_len, ram)?;
     let input = match opts.input.as_deref() {
         None => Vec::new(),
         Some("-") => {
@@ -198,15 +245,7 @@ fn build_machine(opts: &Options, line_open: Rc<Cell<bool>>) -> Result<Machine, S
     if let Some(base) = opts.uart {
         let uart = Uart::new();
         uart.io().push_input(&input);
-        let mut stdout = io::stdout();
-        uart.io().set_sink(Some(Box::new(move |b| {
-            // A closed stdout must not stop the firmware.
-            let _ = stdout.write_all(&[b]);
-            if b == b'\n' {
-                let _ = stdout.flush();
-            }
-            line_open.set(b != b'\n');
-        })));
+        uart.io().set_sink(Some(console(line_open)));
         map("UART", base, uart.size(), Box::new(uart))?;
     }
     if let Some(base) = opts.finisher {
@@ -221,15 +260,41 @@ fn build_machine(opts: &Options, line_open: Rc<Cell<bool>>) -> Result<Machine, S
         map("CLINT", base, CLINT_SIZE, Box::new(Clint::new()))?;
     }
 
-    let data = std::fs::read(&opts.firmware).map_err(|e| format!("{}: {e}", opts.firmware))?;
-    let image = ElfImage::parse(&data).map_err(|e| format!("{}: {e}", opts.firmware))?;
     let mut cpu = Cpu::new(image.entry);
     cpu.set_compressed(opts.compressed);
     let mut machine = Machine::new(cpu, bus);
     machine
-        .load_elf(&image)
+        .load_elf(image)
         .map_err(|e| format!("{}: {e}", opts.firmware))?;
     Ok(machine)
+}
+
+/// The signature region `[begin_signature, end_signature)`.
+fn signature_range(image: &ElfImage) -> Result<(Reg, Reg), String> {
+    let begin = symbol(image, "--signature", "begin_signature")?;
+    let end = symbol(image, "--signature", "end_signature")?;
+    if end < begin || begin % 4 != 0 || end % 4 != 0 {
+        return Err(format!(
+            "--signature: bad signature region 0x{begin:08x}..0x{end:08x}"
+        ));
+    }
+    Ok((begin, end))
+}
+
+fn write_signature(
+    machine: &mut Machine,
+    (begin, end): (Reg, Reg),
+    path: &str,
+) -> Result<(), String> {
+    let mut out = String::with_capacity((end - begin) as usize / 4 * 9);
+    for addr in (begin..end).step_by(4) {
+        let word = machine
+            .bus
+            .read_u32(addr)
+            .map_err(|e| format!("--signature: {e}"))?;
+        out.push_str(&format!("{word:08x}\n"));
+    }
+    std::fs::write(path, out).map_err(|e| format!("--signature: {path}: {e}"))
 }
 
 fn describe(trap: &Trap) -> String {
@@ -252,8 +317,19 @@ fn main() -> ExitCode {
         }
     };
     let line_open: Rc<Cell<bool>> = Rc::default();
-    let mut machine = match build_machine(&opts, line_open.clone()) {
-        Ok(m) => m,
+    let setup = std::fs::read(&opts.firmware)
+        .map_err(|e| e.to_string())
+        .and_then(|data| ElfImage::parse(&data).map_err(|e| e.to_string()))
+        .map_err(|e| format!("{}: {e}", opts.firmware))
+        .and_then(|image| {
+            let signature = match opts.signature {
+                Some(_) => Some(signature_range(&image)?),
+                None => None,
+            };
+            Ok((build_machine(&opts, &image, line_open.clone())?, signature))
+        });
+    let (mut machine, signature) = match setup {
+        Ok(s) => s,
         Err(msg) => {
             eprintln!("mrve32: {msg}");
             return ExitCode::from(EXIT_USAGE);
@@ -339,6 +415,13 @@ fn main() -> ExitCode {
             "mrve32: {} steps, {} instructions retired, mcycle {}",
             res.steps, machine.cpu.csrs.minstret, machine.cpu.csrs.mcycle
         );
+    }
+    // Written however the run ended: a partial signature helps debugging.
+    if let (Some(range), Some(path)) = (signature, &opts.signature)
+        && let Err(msg) = write_signature(&mut machine, range, path)
+    {
+        eprintln!("mrve32: {msg}");
+        return ExitCode::from(EXIT_USAGE);
     }
     ExitCode::from(code)
 }

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 const FIRMWARE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/firmware/hello.elf");
+const HTIF_FIRMWARE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/firmware/htif.elf");
 const GREETING: &str = "Hello from MRVE32!\nfib(20) = 6765\n";
 
 fn run(args: &[&str], input: Option<&[u8]>) -> Output {
@@ -125,4 +126,42 @@ fn test_usage_errors() {
     let out = run(&["--version"], None);
     assert_eq!(out.status.code(), Some(0));
     assert!(stdout(&out).starts_with("mrve32 "));
+}
+
+#[test]
+fn test_htif_console_exit_and_signature() {
+    let dir = std::env::temp_dir().join(format!("mrve32-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sig = dir.join("htif.sig");
+    let out = run(
+        &[
+            "--htif",
+            "--signature",
+            sig.to_str().unwrap(),
+            HTIF_FIRMWARE,
+        ],
+        None,
+    );
+    assert_eq!(stdout(&out), "hi\n");
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(&sig).unwrap(),
+        "cafef00d\n12345678\ndeadbeef\n"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // Without --htif, tohost is plain memory and the firmware spins.
+    let out = run(&["--max-steps", "1000", HTIF_FIRMWARE], None);
+    assert_eq!(out.status.code(), Some(124));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn test_htif_and_signature_need_symbols() {
+    let out = run(&["--htif", FIRMWARE], None);
+    assert_eq!(out.status.code(), Some(125));
+    assert!(stderr(&out).contains("--htif: the ELF has no symbol `tohost`"));
+    let out = run(&["--signature", "x.sig", FIRMWARE], None);
+    assert_eq!(out.status.code(), Some(125));
+    assert!(stderr(&out).contains("no symbol `begin_signature`"));
 }

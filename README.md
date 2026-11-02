@@ -18,14 +18,14 @@ MRVE32 is a lightweight RV32IMAC emulator designed for bare-metal firmware execu
 - **Interrupts & timer**: machine external, software and timer interrupts with spec priority (MEI > MSI > MTI), direct and vectored `mtvec`, `wfi` that stalls the hart until an interrupt is pending. A CLINT device (`msip`, `mtime`, `mtimecmp`, SiFive memory map) is included; any device can raise interrupt lines through `BusDevice::irq_lines`.
 - **Counters (Zicntr)**: 64-bit `mcycle`/`minstret` with `mcountinhibit`, read-only `cycle`/`instret` shadows; `mhpmcounter*`/`mhpmevent*` are hardwired to zero.
 - **Strict CSR file**: accesses to unimplemented CSRs and writes to read-only CSRs raise illegal-instruction exceptions; WARL fields (`mstatus`, `mtvec`, `mepc`, `mie`, `mip`) are masked. Implemented: `mstatus`, `mstatush`, `misa`, `mie`, `mip`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mcountinhibit`, `mcycle[h]`, `minstret[h]`, `cycle[h]`, `instret[h]`, `mvendorid`, `marchid`, `mimpid`, `mhartid`, `mconfigptr`.
-- **Tested against riscv-tests**: passes all 75 applicable tests from [`riscv-tests`](https://github.com/riscv-software-src/riscv-tests) (`rv32ui-p-*`, `rv32um-p-*`, `rv32ua-p-*`, `rv32uc-p-rvc` and the M-mode `rv32mi-p-*` tests); every test except `rvc` runs both with and without C. This is not the official RISC-V Architectural Certification suite (`riscv-arch-test`).
+- **Tested against riscv-tests**: passes all 75 applicable tests from [`riscv-tests`](https://github.com/riscv-software-src/riscv-tests) (`rv32ui-p-*`, `rv32um-p-*`, `rv32ua-p-*`, `rv32uc-p-rvc` and the M-mode `rv32mi-p-*` tests); every test except `rvc` runs both with and without C. The [RISC-V Architectural Certification Tests](tests/arch-test/README.md) (`riscv-arch-test`, ACT4) have a device configuration for MRVE32: the 104 unprivileged tests for RV32IMAC agree with QEMU at every signature point, and CI runs the full Sail-based flow.
 - **Bare-Metal & Deterministic**: Machine mode only, no MMU, virtual memory, or OS overhead.
 - **Modular Bus Architecture**: Devices, RAM, and memory-mapped peripherals implement the `BusDevice` trait. The bus performs offset translation and address routing.
 - **Hardware Coprocessor Slot**: extension point via `trait Coprocessor` (or a Python object, `Emulator.set_coprocessor`) for custom instructions (opcodes `0x0B` and `0x2B`). Register updates are committed atomically and `x0` stays zero.
 - **Unidirectional Ownership**: Clean Rust ownership model (`cpu.step(&mut bus)`). The CPU core maintains zero references to the system bus.
 - **No dependencies**: the core library depends only on Rust `std`.
 - **Standard peripherals**: RAM, CLINT, an NS16550A-compatible UART and a `sifive,test0` test finisher (firmware sets the exit status), in the QEMU `virt` register layout so existing drivers work unchanged.
-- **Command-line runner**: `mrve32 firmware.elf` runs an ELF on a QEMU-virt-like memory map, streams the UART to stdout and exits with the firmware's status; `--trace` prints every instruction (GNU objdump-style disassembler), `--stop-on-trap`, `--max-steps`, double-fault detection.
+- **Command-line runner**: `mrve32 firmware.elf` runs an ELF on a QEMU-virt-like memory map, streams the UART to stdout and exits with the firmware's status; `--trace` prints every instruction (GNU objdump-style disassembler), `--stop-on-trap`, `--max-steps`, double-fault detection; `--htif` and `--signature` for compliance suites (HTIF `tohost`, Sail-format signature dump).
 - **Pluggable devices**: a device is anything implementing `BusDevice` (Rust), a Python object with `read`/`write` methods, or a native module built separately against the device C ABI ([`include/mrve32_device.h`](include/mrve32_device.h), `mrve32::plugin`). Devices get `tick()` time and can raise interrupt lines. See [`docs/devices.md`](docs/devices.md).
 - **Python package (PyO3)**: `pip install`-able `mrve32` module with an `Emulator` class (ELF loading, symbols, breakpoints, run control, instruction tracing, memory/register/CSR access, `map_device`), `Uart`, `TestFinisher` and `disassemble`. Typed (`py.typed` stubs).
 
@@ -50,6 +50,7 @@ Build firmware with `-march=rv32imac_zicsr_zifencei -mabi=ilp32` (or any subset,
 cargo install --path .           # installs the `mrve32` binary
 mrve32 firmware.elf              # UART -> stdout, exit status from the finisher
 mrve32 --trace --max-steps 20 firmware.elf
+mrve32 --htif --signature out.sig test.elf  # Sail/Spike-style tests: HTIF tohost, signature dump
 mrve32 --help
 ```
 
@@ -258,6 +259,14 @@ pinned `riscv-tests` revision (requires a RISC-V GCC cross toolchain):
 
 ```bash
 scripts/build-riscv-tests.sh
+```
+
+RISC-V Architectural Certification Tests (needs a RISC-V GCC; `--qemu` also
+runs every self-checking ELF on QEMU; the Sail-based flow is described in
+[`tests/arch-test/README.md`](tests/arch-test/README.md)):
+
+```bash
+scripts/arch-test.sh local --qemu
 ```
 
 Robustness: `tests/decoder_fuzz.rs` runs every 16-bit encoding, every

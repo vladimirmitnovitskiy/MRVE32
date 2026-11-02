@@ -1,0 +1,9 @@
+# ACT4 framework configuration for MRVE32 (see ../README.md).
+# SPDX-License-Identifier: Apache-2.0
+name: mrve32-rv32imac
+compiler_exe: riscv64-unknown-elf-gcc # executable name on $PATH or full path
+objdump_exe: riscv64-unknown-elf-objdump # optional
+ref_model_exe: sail_riscv_sim # Sail 0.16
+udb_config: mrve32-rv32imac.yaml
+linker_script: link.ld
+dut_include_dir: . # rvmodel_macros.h and sail.json
