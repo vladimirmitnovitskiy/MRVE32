@@ -59,7 +59,7 @@ assert b"Hello" in uart.output()               # a firmware test, ready for pyte
 | Speed | **fastest** (JIT) | fast interpreter | fast (JIT core derived from QEMU) | interpreter, ~45 MIPS |
 | RISC-V coverage | **RV32/RV64, most extensions**, M/S/U modes | **RV32/RV64, nearly all ratified extensions** | RV32/RV64, many extensions, M/S/U modes | RV32IMAC, M-mode only |
 | Linux, several cores | **yes** | **yes** | **yes** | no |
-| Real boards and chips | **many** | none (generic machine) | **many MCUs and SoCs** | none (QEMU `virt`-like machine) |
+| Real boards and chips | a few RISC-V boards (SiFive HiFive1 and Unleashed, PolarFire Icicle Kit, OpenTitan); many more for Arm | none (generic machine) | **many MCUs and SoCs** | none (QEMU `virt`-like machine) |
 | Add a peripheral | C, compiled into QEMU | C++ plugin | C# or Python, plus platform files | **a Python class, a Rust trait or a C ABI module; no rebuild** |
 | Add a custom instruction | change QEMU's C source | C++ extension | Python or C# handler | **a Python method or a Rust trait** |
 | Deterministic runs | with `-icount` | **yes** | **yes** | **yes** |
