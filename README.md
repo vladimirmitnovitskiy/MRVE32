@@ -7,10 +7,71 @@
 
 # MRVE32 (Modular RISC-V Emulator 32-bit)
 
+**A RISC-V microcontroller you can `pip install`: run bare-metal RV32IMAC
+firmware from Python or Rust, and add your own peripherals and custom
+instructions in a few lines.**
 
-**A modular, deterministic RV32IMAC bare-metal microcontroller emulator in Rust, with pluggable devices.**
+```python
+import mrve32
 
-MRVE32 is a lightweight RV32IMAC emulator designed for bare-metal firmware execution, custom SoC peripheral development, and hardware coprocessor prototyping. The core is a CPU, a memory-mapped I/O (MMIO) bus, RAM, a CLINT and an ELF loader; every other peripheral is a **device module** that anyone can write — in Rust, in Python, or as a separately built native package through a small, versioned C ABI. Python bindings make it a testbench engine.
+emu = mrve32.Emulator(ram_size=1 << 20)        # RV32IMAC hart, RAM, timer (CLINT)
+uart = mrve32.Uart()
+emu.map_device(0x1000_0000, uart)              # QEMU virt layout: existing drivers work
+emu.map_device(0x0010_0000, mrve32.TestFinisher())
+
+class Sensor:                                  # a new peripheral is a Python class
+    size = 4
+    def read(self, offset, width): return 42
+    def write(self, offset, width, value): pass
+
+emu.map_device(0x4000_0000, Sensor())
+
+emu.load_elf("firmware.elf")                   # your firmware, built with GCC or Clang
+res = emu.run(10_000_000)
+assert res.reason == "exit" and res.exit_code == 0
+assert b"Hello" in uart.output()               # a firmware test, ready for pytest
+```
+
+### Why MRVE32
+
+- **Test firmware like ordinary code.** Every run is deterministic: the
+  same firmware and inputs give the same instructions, cycles and output,
+  so firmware tests can live in pytest or `cargo test` and run in CI.
+- **Model hardware in Python.** A peripheral is a class with `read` and
+  `write`; it can tick with the clock and raise interrupts. Custom
+  instructions (`custom-0`/`custom-1`) are a Python method too: try an
+  accelerator instruction from the real firmware before writing RTL.
+- **Trustworthy core.** It passes the official
+  [RISC-V Architectural Certification Tests](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/tests/arch-test/README.md)
+  (ACT4, expected values from the Sail golden model) and all 75 applicable
+  [riscv-tests](https://github.com/riscv-software-src/riscv-tests) in CI;
+  the decoder is fuzzed, and the disassembler matches GNU objdump.
+- **Small and embeddable.** A library, not a framework: no configuration
+  language, no dependencies beyond Rust `std`. An interpreter, about
+  45 million instructions per second on one laptop core
+  (`cargo bench --bench mips`).
+
+How it compares: QEMU is far faster and models many real boards, but new
+devices are C code compiled into QEMU. Spike is the reference ISA
+simulator, extended in C++. Renode simulates whole multi-node systems with
+its own platform description files. MRVE32 aims at the space between:
+one microcontroller, scriptable from Python, easy to extend and to embed
+in a test suite.
+
+**Not a fit (yet)** if you need Linux or an RTOS that requires
+User/Supervisor mode, several harts, floating point (F/D), or a model of a
+specific vendor chip.
+
+```bash
+pip install mrve32                # Python (wheels for Linux, macOS, Windows)
+cargo install --git https://github.com/vladimirmitnovitskiy/MRVE32   # the `mrve32` CLI
+mrve32 firmware.elf               # UART -> stdout, exit status from the firmware
+```
+
+Documentation: [Python API](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/python.md) ·
+[writing devices](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/devices.md) ·
+[command-line runner](#command-line-runner) · [Rust usage](#rust-usage) ·
+[verification](#verification--quality-assurance)
 
 ---
 
@@ -42,7 +103,7 @@ Modules live in `modules/` for now but depend on the core only through its publi
 
 ### Not implemented (yet)
 
-The `time`/`timeh` CSRs (read `mtime` from the CLINT instead), an interrupt controller (PLIC; the UART drives MEIP directly), User/Supervisor modes, PMP, debug triggers, HTIF/semihosting, the F/D extensions, and Zcb/Zcmp. Atomics assume a single hart: `aq`/`rl` have no effect and a trap clears the LR reservation.
+The `time`/`timeh` CSRs (read `mtime` from the CLINT instead), an interrupt controller (PLIC; the UART drives MEIP directly), User/Supervisor modes, PMP, debug triggers, semihosting, the F/D extensions, and Zcb/Zcmp. Atomics assume a single hart: `aq`/`rl` have no effect and a trap clears the LR reservation.
 Build firmware with `-march=rv32imac_zicsr_zifencei -mabi=ilp32` (or any subset, e.g. `rv32imc_zicsr`). Misaligned loads and stores are performed in hardware rather than trapped.
 
 ---
