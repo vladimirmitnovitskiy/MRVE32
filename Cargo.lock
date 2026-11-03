@@ -16,14 +16,14 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "mrve32"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pyo3",
 ]
 
 [[package]]
 name = "mrve32-snn"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mrve32",
  "pyo3",

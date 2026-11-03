@@ -15,6 +15,22 @@ version in both `Cargo.toml` files, and push a `vX.Y.Z` tag (see
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-03
+
+Documentation and packaging only; the emulator is unchanged.
+
+### Added
+
+- Python API reference (`docs/python.md`), also the PyPI description of
+  `mrve32`. The `mrve32-snn` README documents its Python API.
+
+### Changed
+
+- PyPI metadata: Documentation links, Python 3.10–3.14 classifiers.
+- README badges (Python versions, riscv-arch-test, MSRV); links are
+  absolute so they work on PyPI.
+- Release wheels are tested on Python 3.10 and 3.14.
+
 ## [0.1.0] - 2026-11-03
 
 First public release.
