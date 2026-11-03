@@ -150,12 +150,17 @@ state in `BusDevice::tick`; see [`docs/devices.md`](https://github.com/vladimirm
 ---
 ## Python Testbenches (PyO3)
 
-Install the `mrve32` package (builds the extension with [maturin](https://www.maturin.rs/);
-needs a Rust toolchain and Python >= 3.10):
+Install from PyPI (prebuilt wheels for Linux, macOS and Windows, Python >= 3.10):
 
 ```bash
-pip install .                 # or, for development: pip install -e ".[test]"
+pip install mrve32            # the SNN device module: pip install mrve32-snn
 ```
+
+From a checkout, `pip install -e ".[test]"` builds the extension with
+[maturin](https://www.maturin.rs/) (needs a Rust toolchain).
+
+The full reference with more examples is [docs/python.md](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/python.md).
+A short tour:
 
 Run firmware and inspect the machine:
 
@@ -213,7 +218,7 @@ class Mac:
 emu.set_coprocessor(Mac())                # None detaches it
 ```
 
-For example, with the SNN module (`pip install ./modules/snn`):
+For example, with the SNN module (`pip install mrve32-snn`):
 
 ```python
 import numpy as np
