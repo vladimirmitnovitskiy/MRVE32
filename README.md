@@ -1,9 +1,9 @@
-[![Rust](https://img.shields.io/badge/rust-stable%202024-orange.svg)](https://www.rust-lang.org)
-[![Crates.io](https://img.shields.io/crates/v/mrve32.svg)](https://crates.io/crates/mrve32)
-[![Docs.rs](https://docs.rs/mrve32/badge.svg)](https://docs.rs/mrve32)
 [![PyPI](https://img.shields.io/pypi/v/mrve32.svg)](https://pypi.org/project/mrve32/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/pypi/pyversions/mrve32.svg)](https://pypi.org/project/mrve32/)
 [![CI](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/ci.yml/badge.svg)](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/ci.yml)
+[![riscv-arch-test](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/arch-test.yml/badge.svg)](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/arch-test.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-orange.svg)](https://www.rust-lang.org)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/LICENSE)
 
 # MRVE32 (Modular RISC-V Emulator 32-bit)
 
@@ -21,7 +21,7 @@ MRVE32 is a lightweight RV32IMAC emulator designed for bare-metal firmware execu
 - **Interrupts & timer**: machine external, software and timer interrupts with spec priority (MEI > MSI > MTI), direct and vectored `mtvec`, `wfi` that stalls the hart until an interrupt is pending. A CLINT device (`msip`, `mtime`, `mtimecmp`, SiFive memory map) is included; any device can raise interrupt lines through `BusDevice::irq_lines`.
 - **Counters (Zicntr)**: 64-bit `mcycle`/`minstret` with `mcountinhibit`, read-only `cycle`/`instret` shadows; `mhpmcounter*`/`mhpmevent*` are hardwired to zero.
 - **Strict CSR file**: accesses to unimplemented CSRs and writes to read-only CSRs raise illegal-instruction exceptions; WARL fields (`mstatus`, `mtvec`, `mepc`, `mie`, `mip`) are masked. Implemented: `mstatus`, `mstatush`, `misa`, `mie`, `mip`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mcountinhibit`, `mcycle[h]`, `minstret[h]`, `cycle[h]`, `instret[h]`, `mvendorid`, `marchid`, `mimpid`, `mhartid`, `mconfigptr`.
-- **Tested against riscv-tests**: passes all 75 applicable tests from [`riscv-tests`](https://github.com/riscv-software-src/riscv-tests) (`rv32ui-p-*`, `rv32um-p-*`, `rv32ua-p-*`, `rv32uc-p-rvc` and the M-mode `rv32mi-p-*` tests); every test except `rvc` runs both with and without C. The [RISC-V Architectural Certification Tests](tests/arch-test/README.md) (`riscv-arch-test`, ACT4) have a device configuration for MRVE32: the 104 unprivileged tests for RV32IMAC agree with QEMU at every signature point, and CI runs the full Sail-based flow.
+- **Tested against riscv-tests**: passes all 75 applicable tests from [`riscv-tests`](https://github.com/riscv-software-src/riscv-tests) (`rv32ui-p-*`, `rv32um-p-*`, `rv32ua-p-*`, `rv32uc-p-rvc` and the M-mode `rv32mi-p-*` tests); every test except `rvc` runs both with and without C. The [RISC-V Architectural Certification Tests](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/tests/arch-test/README.md) (`riscv-arch-test`, ACT4) have a device configuration for MRVE32: the 104 unprivileged tests for RV32IMAC agree with QEMU at every signature point, and CI runs the full Sail-based flow.
 - **Bare-Metal & Deterministic**: Machine mode only, no MMU, virtual memory, or OS overhead.
 - **Modular Bus Architecture**: Devices, RAM, and memory-mapped peripherals implement the `BusDevice` trait. The bus performs offset translation and address routing.
 - **Hardware Coprocessor Slot**: extension point via `trait Coprocessor` (or a Python object, `Emulator.set_coprocessor`) for custom instructions (opcodes `0x0B` and `0x2B`). Register updates are committed atomically and `x0` stays zero.
@@ -29,14 +29,14 @@ MRVE32 is a lightweight RV32IMAC emulator designed for bare-metal firmware execu
 - **No dependencies**: the core library depends only on Rust `std`.
 - **Standard peripherals**: RAM, CLINT, an NS16550A-compatible UART and a `sifive,test0` test finisher (firmware sets the exit status), in the QEMU `virt` register layout so existing drivers work unchanged.
 - **Command-line runner**: `mrve32 firmware.elf` runs an ELF on a QEMU-virt-like memory map, streams the UART to stdout and exits with the firmware's status; `--trace` prints every instruction (GNU objdump-style disassembler), `--stop-on-trap`, `--max-steps`, double-fault detection; `--htif` and `--signature` for compliance suites (HTIF `tohost`, Sail-format signature dump).
-- **Pluggable devices**: a device is anything implementing `BusDevice` (Rust), a Python object with `read`/`write` methods, or a native module built separately against the device C ABI ([`include/mrve32_device.h`](include/mrve32_device.h), `mrve32::plugin`). Devices get `tick()` time and can raise interrupt lines. See [`docs/devices.md`](docs/devices.md).
+- **Pluggable devices**: a device is anything implementing `BusDevice` (Rust), a Python object with `read`/`write` methods, or a native module built separately against the device C ABI ([`include/mrve32_device.h`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/include/mrve32_device.h), `mrve32::plugin`). Devices get `tick()` time and can raise interrupt lines. See [`docs/devices.md`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/devices.md).
 - **Python package (PyO3)**: `pip install`-able `mrve32` module with an `Emulator` class (ELF loading, symbols, breakpoints, run control, instruction tracing, memory/register/CSR access, `map_device`), `Uart`, `TestFinisher` and `disassemble`. Typed (`py.typed` stubs).
 
 ### Device modules
 
 | Module | Description |
 |---|---|
-| [`mrve32-snn`](modules/snn) | SNN layer accelerator model (draft v0): LIF/IF neurons, `i16` potentials, `i8` weights, a bit-exact golden model behind a swappable `SnnBackend`, an analytical cycle model, a completion interrupt, and a NumPy reference. [Spec](modules/snn/docs/snn-accelerator-v0.md). |
+| [`mrve32-snn`](https://github.com/vladimirmitnovitskiy/MRVE32/tree/main/modules/snn) | SNN layer accelerator model (draft v0): LIF/IF neurons, `i16` potentials, `i8` weights, a bit-exact golden model behind a swappable `SnnBackend`, an analytical cycle model, a completion interrupt, and a NumPy reference. [Spec](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/modules/snn/docs/snn-accelerator-v0.md). |
 
 Modules live in `modules/` for now but depend on the core only through its public API and could be moved to their own repositories unchanged.
 
@@ -69,7 +69,7 @@ Default memory map (QEMU `virt`-compatible, every address configurable):
 Exit status is the firmware's (0–255), or 123 (idle in `wfi` forever),
 124 (`--max-steps`), 125 (usage/load error), 126 (trap with
 `--stop-on-trap`, or a double fault such as running without `mtvec`).
-[`tests/firmware`](tests/firmware) is a minimal freestanding C example
+[`tests/firmware`](https://github.com/vladimirmitnovitskiy/MRVE32/tree/main/tests/firmware) is a minimal freestanding C example
 (startup, linker script, UART, finisher) built by
 `scripts/build-test-firmware.sh`.
 
@@ -145,7 +145,7 @@ bus.map_device(0x0200_0000, CLINT_SIZE, Box::new(Clint::with_divider(10)))
 
 Custom peripherals raise interrupts by overriding `BusDevice::irq_lines`
 (return a mask of `MIP_MEIP`/`MIP_MSIP`/`MIP_MTIP`) and advance their own
-state in `BusDevice::tick`; see [`docs/devices.md`](docs/devices.md).
+state in `BusDevice::tick`; see [`docs/devices.md`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/devices.md).
 
 ---
 ## Python Testbenches (PyO3)
@@ -182,7 +182,7 @@ emu.set_tracer(lambda pc, word, trap: print(hex(pc), mrve32.disassemble(word, pc
 data = emu.read_bytes(emu.symbol("buffer"), 64)  # raises mrve32.BusError if unmapped
 ```
 
-Attach devices: native modules or plain Python objects ([`docs/devices.md`](docs/devices.md)):
+Attach devices: native modules or plain Python objects ([`docs/devices.md`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/devices.md)):
 
 ```python
 class Gpio:
@@ -266,7 +266,7 @@ scripts/build-riscv-tests.sh
 
 RISC-V Architectural Certification Tests (needs a RISC-V GCC; `--qemu` also
 runs every self-checking ELF on QEMU; the Sail-based flow is described in
-[`tests/arch-test/README.md`](tests/arch-test/README.md)):
+[`tests/arch-test/README.md`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/tests/arch-test/README.md)):
 
 ```bash
 scripts/arch-test.sh local --qemu
@@ -275,7 +275,7 @@ scripts/arch-test.sh local --qemu
 Robustness: `tests/decoder_fuzz.rs` runs every 16-bit encoding, every
 opcode/funct3/funct7 combination and a million random words through the
 decoders and the disassembler, and random programs through the CPU.
-Coverage-guided targets for `cargo-fuzz` are in [`fuzz/`](fuzz/README.md)
+Coverage-guided targets for `cargo-fuzz` are in [`fuzz/`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/fuzz/README.md)
 (CI runs them weekly). The disassembler was cross-checked against GNU objdump
 2.46: the only differences are encodings the spec reserves on RV32
 (`slli`/`srli`/`srai` with shamt[5] = 1, `c.addi16sp` with immediate 0),
@@ -294,7 +294,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 The minimum supported Rust version (MSRV) is **1.88** (checked in CI).
-Changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
+Changes are listed in [`CHANGELOG.md`](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/CHANGELOG.md).
 ---
 ## License
 
