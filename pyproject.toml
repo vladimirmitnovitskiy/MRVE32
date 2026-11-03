@@ -5,7 +5,9 @@ build-backend = "maturin"
 [project]
 name = "mrve32"
 description = "Deterministic RV32IMAC microcontroller emulator with pluggable memory-mapped devices"
-readme = "README.md"
+# PyPI shows the Python API reference; the repository README covers the
+# whole project (CLI, Rust API, verification).
+readme = "docs/python.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 keywords = ["risc-v", "riscv", "emulator", "microcontroller", "testbench"]
