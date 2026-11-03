@@ -51,12 +51,26 @@ assert b"Hello" in uart.output()               # a firmware test, ready for pyte
   45 million instructions per second on one laptop core
   (`cargo bench --bench mips`).
 
-How it compares: QEMU is far faster and models many real boards, but new
-devices are C code compiled into QEMU. Spike is the reference ISA
-simulator, extended in C++. Renode simulates whole multi-node systems with
-its own platform description files. MRVE32 aims at the space between:
-one microcontroller, scriptable from Python, easy to extend and to embed
-in a test suite.
+### How it compares
+
+| | [QEMU](https://www.qemu.org) | [Spike](https://github.com/riscv-software-src/riscv-isa-sim) | [Renode](https://renode.io) | MRVE32 |
+|---|---|---|---|---|
+| Made for | running operating systems and software on emulated boards | the ISA reference model | simulating embedded systems and networks of devices | testing and prototyping microcontroller firmware and hardware |
+| Speed | **fastest** (JIT) | fast interpreter | fast (JIT core derived from QEMU) | interpreter, ~45 MIPS |
+| RISC-V coverage | **RV32/RV64, most extensions**, M/S/U modes | **RV32/RV64, nearly all ratified extensions** | RV32/RV64, many extensions, M/S/U modes | RV32IMAC, M-mode only |
+| Linux, several cores | **yes** | **yes** | **yes** | no |
+| Real boards and chips | **many** | none (generic machine) | **many MCUs and SoCs** | none (QEMU `virt`-like machine) |
+| Add a peripheral | C, compiled into QEMU | C++ plugin | C# or Python, plus platform files | **a Python class, a Rust trait or a C ABI module; no rebuild** |
+| Add a custom instruction | change QEMU's C source | C++ extension | Python or C# handler | **a Python method or a Rust trait** |
+| Deterministic runs | with `-icount` | **yes** | **yes** | **yes** |
+| Use from a Python test | separate process (GDB, QMP) | separate process | separate process, or `pyrenode3` | **in the same process: `pip install mrve32`** |
+| Install | system packages | usually built from source | packages | **`pip install` / `cargo install`** |
+
+In short: to run existing software on a real board, use QEMU or Renode;
+to check what the ISA specification says, use Spike. MRVE32 is for
+the case where you control the hardware: testing firmware in pytest or
+`cargo test`, and modelling a new peripheral or instruction in a few lines
+of Python before it exists in silicon.
 
 **Not a fit (yet)** if you need Linux or an RTOS that requires
 User/Supervisor mode, several harts, floating point (F/D), or a model of a
