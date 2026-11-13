@@ -2,9 +2,10 @@
 
 The MRVE32 core is a CPU, a bus, RAM, a CLINT and an ELF loader. Every other
 peripheral is a **device module**: a memory-mapped device the emulator
-knows nothing about in advance. The SNN accelerator in
-[`modules/snn`](../modules/snn) is such a module and uses only the public
-interfaces described here, so it doubles as a full worked example.
+knows nothing about in advance. The SNN accelerator,
+[`mrve32-snn`](https://github.com/vladimirmitnovitskiy/mrve32-snn), is such a module in its own repository and uses
+only the public interfaces described here, so it doubles as a full worked
+example.
 
 A device is a window of `size` bytes on the bus. It gets:
 
@@ -162,7 +163,7 @@ impl Countdown {
 
 Build it with maturin; users then write
 `emu.map_device(0x4000_0000, my_package.Countdown())`. Copy
-[`modules/snn`](../modules/snn) (`Cargo.toml`, `pyproject.toml`,
+[`mrve32-snn`](https://github.com/vladimirmitnovitskiy/mrve32-snn) (`Cargo.toml`, `pyproject.toml`,
 `src/python.rs`) as a template.
 
 ### In C/C++
@@ -187,5 +188,5 @@ destructor frees the table and calls `dev->destroy(dev->ctx)` only if
 - Publish an `ID` register so drivers can check what is mapped where.
 - Ship a host-side driver and, for compute devices, a reference model the
   device can be checked against (see `mrve32_snn.reference_step`).
-- Document the register map; [the SNN spec](../modules/snn/docs/snn-accelerator-v0.md)
+- Document the register map; [the SNN spec](https://github.com/vladimirmitnovitskiy/mrve32-snn/blob/main/docs/snn-accelerator-v0.md)
   is an example.

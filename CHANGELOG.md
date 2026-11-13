@@ -5,21 +5,23 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (before 1.0, a minor version bump may contain breaking changes).
 
-The Rust crates (`mrve32`, `mrve32-snn`) and the Python packages of the same
-names share version numbers. The device C ABI (`include/mrve32_device.h`) is
-versioned separately by `MRVE32_DEVICE_ABI_VERSION`.
+The Rust crate `mrve32` and the Python package of the same name share
+version numbers. The device C ABI (`include/mrve32_device.h`) is versioned
+separately by `MRVE32_DEVICE_ABI_VERSION`. Up to 0.1.1 this repository also
+contained `mrve32-snn`; it now has [its own](https://github.com/vladimirmitnovitskiy/mrve32-snn)
+repository and versions.
 
 To release: rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, set the same
-version in both `Cargo.toml` files, and push a `vX.Y.Z` tag (see
-`.github/workflows/release.yml`).
+version in `Cargo.toml`, push a `vX.Y.Z` tag (PyPI, see
+`.github/workflows/release.yml`) and run `cargo publish` (crates.io).
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- `mrve32-snn`: `SYN_OPS` register (`0x024`): synaptic accumulations in
-  the last step (`IN_SPIKES × N_OUT`), the basis of an energy-per-inference
-  estimate; `SnnDriver.syn_ops` and `REG_SYN_OPS` in Python.
+- The SNN accelerator module `mrve32-snn` moved to its own repository,
+  <https://github.com/vladimirmitnovitskiy/mrve32-snn>. It uses only the
+  public API, so nothing changes for users of either package.
 
 ## [0.1.1] - 2026-11-03
 

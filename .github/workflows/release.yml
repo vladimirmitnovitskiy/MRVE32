@@ -1,10 +1,10 @@
 name: Release
 
-# Builds wheels and sdists for `mrve32` and `mrve32-snn`; on a `v*` tag also
-# publishes them to PyPI with Trusted Publishing (no API token: configure
-# both projects on pypi.org -> Publishing -> GitHub, workflow `release.yml`,
-# environments `pypi` for mrve32 and `pypi-snn` for mrve32-snn). Run manually
-# to build without publishing.
+# Builds wheels and an sdist for `mrve32`; on a `v*` tag also publishes them
+# to PyPI with Trusted Publishing (no API token: pypi.org -> mrve32 ->
+# Publishing -> GitHub, workflow `release.yml`, environment `pypi`). Run
+# manually to build without publishing. The crate is published to crates.io
+# by hand (`cargo publish`). `mrve32-snn` has its own repository and release.
 
 on:
   push:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   check-version:
-    name: Tag matches crate versions
+    name: Tag matches crate version
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -27,24 +27,19 @@ jobs:
       - name: Compare
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          for manifest in Cargo.toml modules/snn/Cargo.toml; do
-            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
-            if [ "$version" != "$tag" ]; then
-              echo "::error::$manifest has version $version, tag is $GITHUB_REF_NAME"
-              exit 1
-            fi
-          done
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Cargo.toml has version $version, tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
           grep -q "^## \[$tag\]" CHANGELOG.md || { echo "::error::no CHANGELOG.md entry for $tag"; exit 1; }
 
   wheels:
-    name: Wheel ${{ matrix.package.name }} (${{ matrix.platform.name }})
+    name: Wheel (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
       matrix:
-        package:
-          - { name: mrve32, dir: . }
-          - { name: mrve32-snn, dir: modules/snn }
         platform:
           - { name: linux-x86_64, runner: ubuntu-latest, target: x86_64 }
           - { name: linux-aarch64, runner: ubuntu-latest, target: aarch64 }
@@ -57,37 +52,30 @@ jobs:
       # abi3: one wheel per platform covers CPython >= 3.10.
       - uses: PyO3/maturin-action@v1
         with:
-          working-directory: ${{ matrix.package.dir }}
           target: ${{ matrix.platform.target }}
           manylinux: auto
           args: --release --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.package.name }}-${{ matrix.platform.name }}
-          path: ${{ matrix.package.dir }}/dist/*.whl
+          name: wheel-${{ matrix.platform.name }}
+          path: dist/*.whl
 
   sdist:
-    name: Sdist ${{ matrix.package.name }}
+    name: Sdist
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        package:
-          - { name: mrve32, dir: . }
-          - { name: mrve32-snn, dir: modules/snn }
     steps:
       - uses: actions/checkout@v4
       - uses: PyO3/maturin-action@v1
         with:
-          working-directory: ${{ matrix.package.dir }}
           command: sdist
           args: --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist-${{ matrix.package.name }}
-          path: ${{ matrix.package.dir }}/dist/*.tar.gz
+          name: sdist
+          path: dist/*.tar.gz
 
   test-wheels:
-    name: Test wheels (${{ matrix.os }})
+    name: Test wheels (${{ matrix.os }}, ${{ matrix.python }})
     needs: wheels
     runs-on: ${{ matrix.os }}
     strategy:
@@ -108,18 +96,18 @@ jobs:
       - name: Install from the built wheels only
         shell: bash
         run: |
-          pip install numpy pytest
-          pip install --no-index --find-links dist mrve32 mrve32-snn
-      # Run from a temp dir so the tests import the installed packages.
+          pip install pytest
+          pip install --no-index --find-links dist mrve32
+      # Run from a temp dir so the tests import the installed package.
       - name: Run tests
         shell: bash
         run: |
-          cp -r tests modules/snn/tests/python "$RUNNER_TEMP/"
+          cp -r tests "$RUNNER_TEMP/"
           cd "$RUNNER_TEMP"
-          python -m pytest -q -p no:cacheprovider tests/python python
+          python -m pytest -q -p no:cacheprovider tests/python
 
-  publish-mrve32:
-    name: Publish mrve32 to PyPI
+  publish:
+    name: Publish to PyPI
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check-version, wheels, sdist, test-wheels]
     runs-on: ubuntu-latest
@@ -131,31 +119,6 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: "*-mrve32*"
-          path: all-dist
-          merge-multiple: true
-      - name: Select mrve32 packages
-        run: |
-          mkdir -p dist
-          cp all-dist/mrve32-* dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist
-
-  publish-snn:
-    name: Publish mrve32-snn to PyPI
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check-version, wheels, sdist, test-wheels]
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi-snn
-      url: https://pypi.org/p/mrve32-snn
-    permissions:
-      id-token: write # Trusted Publishing
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: "*-mrve32-snn*"
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1

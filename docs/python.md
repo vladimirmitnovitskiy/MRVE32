@@ -578,4 +578,4 @@ The SNN layer accelerator (a behavioural model of a spiking-neural-network
 accelerator, with a NumPy reference model and a host-side driver) is a
 separate package, `pip install mrve32-snn`. Its documentation is on
 [its PyPI page](https://pypi.org/project/mrve32-snn/) and in
-[modules/snn/README.md](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/modules/snn/README.md).
+[its repository](https://github.com/vladimirmitnovitskiy/mrve32-snn).

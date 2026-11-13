@@ -111,9 +111,9 @@ Documentation: [Python API](https://github.com/vladimirmitnovitskiy/MRVE32/blob/
 
 | Module | Description |
 |---|---|
-| [`mrve32-snn`](https://github.com/vladimirmitnovitskiy/MRVE32/tree/main/modules/snn) | SNN layer accelerator model (draft v0): LIF/IF neurons, `i16` potentials, `i8` weights, a bit-exact golden model behind a swappable `SnnBackend`, an analytical cycle model, a completion interrupt, and a NumPy reference. [Spec](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/modules/snn/docs/snn-accelerator-v0.md). |
+| [`mrve32-snn`](https://github.com/vladimirmitnovitskiy/mrve32-snn) | SNN layer accelerator model (draft v0): LIF/IF neurons, `i16` potentials, `i8` weights, a bit-exact golden model behind a swappable `SnnBackend`, an analytical cycle model, a completion interrupt, and a NumPy reference. [Spec](https://github.com/vladimirmitnovitskiy/mrve32-snn/blob/main/docs/snn-accelerator-v0.md). |
 
-Modules live in `modules/` for now but depend on the core only through its public API and could be moved to their own repositories unchanged.
+Modules live in their own repositories and depend on the core only through its public API (the `mrve32` crate, the device C ABI), like any third-party device. [docs/devices.md](https://github.com/vladimirmitnovitskiy/MRVE32/blob/main/docs/devices.md) explains how to write one.
 
 ### Not implemented (yet)
 
@@ -319,7 +319,7 @@ for t in range(10):
 Run the Python tests:
 
 ```bash
-pytest tests/python modules/snn/tests/python
+pytest tests/python
 ```
 
 ---

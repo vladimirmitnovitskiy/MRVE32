@@ -10,10 +10,9 @@ readme = "README.md"
 keywords = ["risc-v", "emulator", "riscv", "microcontroller", "simulator"]
 categories = ["emulators", "simulation", "embedded"]
 # Python package sources, fuzzing and CI files are not part of the crate.
-exclude = ["/python", "/tests/python", "/fuzz", "/.github", "/pyproject.toml", "/modules"]
+exclude = ["/python", "/tests/python", "/fuzz", "/.github", "/pyproject.toml"]
 
 [workspace]
-members = ["modules/snn"]
 exclude = ["fuzz"]
 
 [dependencies]
