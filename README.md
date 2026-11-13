@@ -1,5 +1,7 @@
 [![PyPI](https://img.shields.io/pypi/v/mrve32.svg)](https://pypi.org/project/mrve32/)
 [![Python](https://img.shields.io/pypi/pyversions/mrve32.svg)](https://pypi.org/project/mrve32/)
+[![Crates.io](https://img.shields.io/crates/v/mrve32.svg)](https://crates.io/crates/mrve32)
+[![docs.rs](https://img.shields.io/docsrs/mrve32)](https://docs.rs/mrve32)
 [![CI](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/ci.yml/badge.svg)](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/ci.yml)
 [![riscv-arch-test](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/arch-test.yml/badge.svg)](https://github.com/vladimirmitnovitskiy/MRVE32/actions/workflows/arch-test.yml)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-orange.svg)](https://www.rust-lang.org)
