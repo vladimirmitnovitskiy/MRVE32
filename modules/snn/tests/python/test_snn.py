@@ -105,6 +105,7 @@ def test_emulator_matches_numpy_reference(seed):
         assert np.array_equal(dev.read_vmem(), vmem)
         assert dev.in_spikes == int(spikes.sum())
         assert dev.out_spikes == int(expected_out.sum())
+        assert dev.syn_ops == int(spikes.sum()) * n_out
 
 
 def test_cycles_follow_timing_model():

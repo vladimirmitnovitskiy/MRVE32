@@ -39,6 +39,7 @@ from ._snn import (
     REG_LAYER_SIZE,
     REG_NEURON_CFG,
     REG_OUT_SPIKES,
+    REG_SYN_OPS,
     REG_STATUS,
     SPIKE_IN_BASE,
     SPIKE_OUT_BASE,
@@ -232,6 +233,12 @@ class SnnDriver:
     @property
     def out_spikes(self) -> int:
         return self._reg(REG_OUT_SPIKES)
+
+    @property
+    def syn_ops(self) -> int:
+        """Synaptic accumulations in the last completed step (SYN_OPS):
+        IN_SPIKES × N_OUT. The basis of an energy-per-inference estimate."""
+        return self._reg(REG_SYN_OPS)
 
     def enable_irq(self, enabled: bool = True) -> None:
         self._set_reg(REG_IRQ_EN, IRQ_DONE if enabled else 0)

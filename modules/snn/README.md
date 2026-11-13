@@ -86,7 +86,7 @@ Raises `ValueError` if there is no accelerator at `base`. Attributes:
 | `wait(*, max_cycles=10_000_000, chunk=64)` | `Emulator.tick` until done; raises `SnnError` on a configuration error, `TimeoutError` if it never finishes |
 | `step(spikes_in) -> bool[n_out]` | write inputs, `start`, `wait`, acknowledge, return output spikes |
 | `enable_irq(enabled=True)`, `ack_irq()` | the completion interrupt |
-| `status`, `busy`, `cycles`, `in_spikes`, `out_spikes` | status registers; `cycles` is the duration of the last step |
+| `status`, `busy`, `cycles`, `in_spikes`, `out_spikes`, `syn_ops` | status registers of the last step: `cycles` is its duration, `syn_ops` the number of synaptic accumulations (`in_spikes × n_out`) |
 
 ### Functions
 

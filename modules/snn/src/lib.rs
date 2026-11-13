@@ -32,6 +32,7 @@ pub const REG_NEURON_CFG: Reg = 0x014;
 pub const REG_CYCLES: Reg = 0x018;
 pub const REG_IN_SPIKES: Reg = 0x01C;
 pub const REG_OUT_SPIKES: Reg = 0x020;
+pub const REG_SYN_OPS: Reg = 0x024;
 pub const REG_ID: Reg = 0x0F0;
 pub const REG_CAPS0: Reg = 0x0F4;
 pub const REG_CAPS1: Reg = 0x0F8;
@@ -113,10 +114,11 @@ pub struct SnnAccelerator {
     cycles: u32,
     in_spikes: u32,
     out_spikes: u32,
+    syn_ops: u32,
 
     /// Cycles left until the running step completes.
     remaining: u64,
-    /// Values published to CYCLES/IN_SPIKES/OUT_SPIKES on completion.
+    /// Values published to CYCLES/IN_SPIKES/OUT_SPIKES/SYN_OPS on completion.
     pending: (u64, StepStats),
 
     // Local SRAM
@@ -160,6 +162,7 @@ impl SnnAccelerator {
             cycles: 0,
             in_spikes: 0,
             out_spikes: 0,
+            syn_ops: 0,
             remaining: 0,
             pending: (0, StepStats::default()),
             spikes_in: vec![0; config.max_inputs.div_ceil(32)],
@@ -213,6 +216,7 @@ impl SnnAccelerator {
                 self.cycles = 0;
                 self.in_spikes = 0;
                 self.out_spikes = 0;
+                self.syn_ops = 0;
                 return;
             }
         };
@@ -240,6 +244,12 @@ impl SnnAccelerator {
         self.cycles = cycles.min(u32::MAX as u64) as u32;
         self.in_spikes = stats.in_spikes;
         self.out_spikes = stats.out_spikes;
+        // Every input spike adds its weight row to all N_OUT neurons.
+        // LAYER_SIZE cannot change while BUSY, so it still holds this
+        // step's N_OUT. No overflow: IN_SPIKES × N_OUT <= N_IN × N_OUT,
+        // which START checked to fit in the weight SRAM (< 2^20 bytes).
+        let n_out = self.layer_size >> 16;
+        self.syn_ops = stats.in_spikes * n_out;
         self.status = STATUS_DONE;
         self.irq_status |= IRQ_DONE;
     }
@@ -254,6 +264,7 @@ impl SnnAccelerator {
             REG_CYCLES => self.cycles,
             REG_IN_SPIKES => self.in_spikes,
             REG_OUT_SPIKES => self.out_spikes,
+            REG_SYN_OPS => self.syn_ops,
             REG_ID => SNN_ID,
             REG_CAPS0 => (self.config.max_outputs as u32) << 16 | self.config.max_inputs as u32,
             REG_CAPS1 => self.config.weight_bytes as u32,
@@ -479,6 +490,8 @@ mod tests {
         assert_eq!(dev.read_u32(REG_CYCLES), Ok(14));
         assert_eq!(dev.read_u32(REG_IN_SPIKES), Ok(3));
         assert_eq!(dev.read_u32(REG_OUT_SPIKES), Ok(2));
+        // 3 входных спайка × 3 выходных нейрона
+        assert_eq!(dev.read_u32(REG_SYN_OPS), Ok(9));
         assert_eq!(dev.irq_lines(), MIP_MEIP);
 
         assert_eq!(dev.read_u32(SPIKE_OUT_BASE), Ok(0b011));
@@ -489,6 +502,31 @@ mod tests {
         // W1C подтверждение снимает прерывание
         dev.write_u32(REG_IRQ_STATUS, IRQ_DONE).unwrap();
         assert_eq!(dev.irq_lines(), 0);
+    }
+
+    #[test]
+    fn test_syn_ops_counts_accumulations_and_clears_on_error() {
+        let mut dev = small();
+        load_example(&mut dev);
+        dev.write_u32(REG_CTRL, CTRL_START).unwrap();
+        run_to_completion(&mut dev);
+        assert_eq!(dev.read_u32(REG_SYN_OPS), Ok(9));
+
+        // Без входных спайков синаптической работы нет.
+        dev.write_u32(SPIKE_IN_BASE, 0).unwrap();
+        dev.write_u32(REG_CTRL, CTRL_START).unwrap();
+        run_to_completion(&mut dev);
+        assert_eq!(dev.read_u32(REG_SYN_OPS), Ok(0));
+
+        // Ошибка конфигурации не оставляет значение прошлого шага.
+        dev.write_u32(SPIKE_IN_BASE, 0b1011).unwrap();
+        dev.write_u32(REG_CTRL, CTRL_START).unwrap();
+        run_to_completion(&mut dev);
+        assert_eq!(dev.read_u32(REG_SYN_OPS), Ok(9));
+        dev.write_u32(REG_LAYER_SIZE, 0).unwrap();
+        dev.write_u32(REG_CTRL, CTRL_START).unwrap();
+        assert_ne!(dev.read_u32(REG_STATUS).unwrap() & STATUS_ERROR, 0);
+        assert_eq!(dev.read_u32(REG_SYN_OPS), Ok(0));
     }
 
     #[test]

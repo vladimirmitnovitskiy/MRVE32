@@ -15,6 +15,12 @@ version in both `Cargo.toml` files, and push a `vX.Y.Z` tag (see
 
 ## [Unreleased]
 
+### Added
+
+- `mrve32-snn`: `SYN_OPS` register (`0x024`): synaptic accumulations in
+  the last step (`IN_SPIKES × N_OUT`), the basis of an energy-per-inference
+  estimate; `SnnDriver.syn_ops` and `REG_SYN_OPS` in Python.
+
 ## [0.1.1] - 2026-11-03
 
 Documentation and packaging only; the emulator is unchanged.

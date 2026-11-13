@@ -112,6 +112,7 @@ fn _snn(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("REG_CYCLES", crate::REG_CYCLES),
         ("REG_IN_SPIKES", crate::REG_IN_SPIKES),
         ("REG_OUT_SPIKES", crate::REG_OUT_SPIKES),
+        ("REG_SYN_OPS", crate::REG_SYN_OPS),
         ("REG_ID", crate::REG_ID),
         ("REG_CAPS0", crate::REG_CAPS0),
         ("REG_CAPS1", crate::REG_CAPS1),

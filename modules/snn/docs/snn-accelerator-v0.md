@@ -65,6 +65,7 @@ WEIGHT_BYTES ≤ 516096 (`0x7E000`).
 | `0x018` | `CYCLES`     | RO     | duration of the last completed step, in clock cycles (§6). |
 | `0x01C` | `IN_SPIKES`  | RO     | number of input spikes among the first `N_IN` bits in the last completed step. |
 | `0x020` | `OUT_SPIKES` | RO     | number of output spikes produced by the last completed step. |
+| `0x024` | `SYN_OPS`    | RO     | number of synaptic accumulations (`I[j] += W[i][j]`, §5) in the last completed step: `IN_SPIKES × N_OUT`. Each one reads a weight from SRAM, so this is the main input of an energy estimate. |
 | `0x0F0` | `ID`         | RO     | `0x534E_MMmm`: ASCII `"SN"`, major `MM`, minor `mm`. v0 = `0x534E_0000`. |
 | `0x0F4` | `CAPS0`      | RO     | bits [15:0] `MAX_IN`, bits [31:16] `MAX_OUT`. |
 | `0x0F8` | `CAPS1`      | RO     | `WEIGHT_BYTES`. |
